@@ -236,3 +236,24 @@ resource "aws_secretsmanager_secret_version" "backstage_github_app" {
     ignore_changes = [secret_string]
   }
 }
+
+# CI bot GitHub App (idp-ci-bot): used in the cluster by Argo CD Image Updater to commit image
+# tags to idp-gitops. Placeholder; loaded from ~/.idp like the Backstage App.
+resource "aws_secretsmanager_secret" "ci_bot_github_app" {
+  name                    = "idp/ci-bot-github-app"
+  description             = "GitHub App idp-ci-bot (appId, installationId, privateKey) for Argo CD Image Updater"
+  recovery_window_in_days = 0
+}
+
+resource "aws_secretsmanager_secret_version" "ci_bot_github_app" {
+  secret_id = aws_secretsmanager_secret.ci_bot_github_app.id
+  secret_string = jsonencode({
+    appId          = "REPLACE_ME"
+    installationId = "REPLACE_ME"
+    privateKey     = "REPLACE_ME"
+  })
+
+  lifecycle {
+    ignore_changes = [secret_string]
+  }
+}

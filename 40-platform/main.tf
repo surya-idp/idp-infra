@@ -354,8 +354,9 @@ resource "helm_release" "argocd" {
 # =============================================================================
 
 locals {
-  # Project "bootstrap" holds only the root app: it may create Applications and AppProjects
-  # in the argocd namespace, nothing else. idp-gitops then locks "default" (PLATFORM_REVIEW F4).
+  # Project "bootstrap" holds only the root app: it may create Applications, AppProjects and
+  # ApplicationSets (golden-path services) in the argocd namespace, nothing else. idp-gitops
+  # then locks "default" (PLATFORM_REVIEW F4).
   argocd_root_app = <<-YAML
     apiVersion: argoproj.io/v1alpha1
     kind: AppProject
@@ -375,6 +376,8 @@ locals {
           kind: Application
         - group: argoproj.io
           kind: AppProject
+        - group: argoproj.io
+          kind: ApplicationSet
     ---
     apiVersion: argoproj.io/v1alpha1
     kind: Application
