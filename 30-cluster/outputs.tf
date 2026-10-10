@@ -45,6 +45,11 @@ output "alb_controller_irsa_role_arn" {
   value       = aws_iam_role.alb_controller.arn
 }
 
+output "image_updater_irsa_role_arn" {
+  description = "IAM role ARN for Argo CD Image Updater (annotated on its ServiceAccount in idp-gitops)"
+  value       = aws_iam_role.image_updater.arn
+}
+
 # ─── ElastiCache Valkey ───────────────────────────────────────────────────────
 
 output "valkey_primary_endpoint" {

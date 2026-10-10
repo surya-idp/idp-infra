@@ -478,6 +478,75 @@ resource "aws_iam_role_policy" "alb_controller" {
 }
 
 # =============================================================================
+# IRSA — Argo CD Image Updater
+# =============================================================================
+# Image Updater (installed by Argo CD from idp-gitops/platform/image-updater) lists the tags
+# of golden-path service images to find new builds. Read-only, and only ECR repos under
+# svc/* (the same prefix idp-service-ci may push to). It never pulls for a workload: nodes
+# pull with their own role.
+
+data "aws_iam_policy_document" "image_updater_assume_role" {
+  statement {
+    actions = ["sts:AssumeRoleWithWebIdentity"]
+
+    principals {
+      type        = "Federated"
+      identifiers = [module.eks.oidc_provider_arn]
+    }
+
+    condition {
+      test     = "StringEquals"
+      variable = "${replace(module.eks.cluster_oidc_issuer_url, "https://", "")}:sub"
+      values   = ["system:serviceaccount:argocd:argocd-image-updater-controller"]
+    }
+
+    condition {
+      test     = "StringEquals"
+      variable = "${replace(module.eks.cluster_oidc_issuer_url, "https://", "")}:aud"
+      values   = ["sts.amazonaws.com"]
+    }
+  }
+}
+
+data "aws_iam_policy_document" "image_updater_policy" {
+  statement {
+    sid       = "ECRAuth"
+    actions   = ["ecr:GetAuthorizationToken"]
+    resources = ["*"] # this action does not support resource-level permissions
+  }
+
+  statement {
+    sid = "ReadSvcRepos"
+    actions = [
+      "ecr:DescribeImages",
+      "ecr:ListImages",
+      "ecr:BatchGetImage",
+      "ecr:BatchCheckLayerAvailability",
+      "ecr:GetDownloadUrlForLayer", # newest-build reads the image config for its build date
+    ]
+    resources = [
+      "arn:aws:ecr:ap-south-1:${data.aws_caller_identity.current.account_id}:repository/svc/*",
+    ]
+  }
+}
+
+resource "aws_iam_role" "image_updater" {
+  # idp-gitops/platform/image-updater/patch-serviceaccount.yaml refers to this name.
+  name               = "idp-image-updater"
+  assume_role_policy = data.aws_iam_policy_document.image_updater_assume_role.json
+
+  tags = {
+    Name = "idp-image-updater"
+  }
+}
+
+resource "aws_iam_role_policy" "image_updater" {
+  name   = "idp-image-updater-ecr-read"
+  role   = aws_iam_role.image_updater.id
+  policy = data.aws_iam_policy_document.image_updater_policy.json
+}
+
+# =============================================================================
 # EBS CSI driver - REMOVED (Step 29)
 # =============================================================================
 # Nothing in the cluster uses EBS volumes, and its controller (2 replicas x 6
