@@ -31,11 +31,10 @@ scans both `Project=idp` and `Project=ff-idp` tags.
 
 ---
 
-## 0a. Current State at a Glance (2026-09-27, end of Session 6)
+## 0a. Current State at a Glance (2026-10-10, end of Session 9)
 
 **AWS right now:** everything destroyed except the free permanent layers (00-bootstrap,
-10-network, 15-registry). `make verify-empty` passes: $0.00. Neon was retired 2026-09-27
-(Finding 51); RDS is the only database.
+10-network, 15-registry). `make verify-empty` passes: $0.00. RDS is the only database.
 
 | Step | Status |
 |---|---|
@@ -44,55 +43,46 @@ scans both `Project=idp` and `Project=ff-idp` tags.
 | 26 Argo CD app-of-apps via Terraform, 27 Kustomize overlays | Done and verified 2026-09-26 |
 | 28 HPA + PDB + zero-downtime rollouts (0 failed requests under load) | Done and verified 2026-09-26 |
 | 29 Backstage in the cluster (image via CI, RDS, GitHub App) | Done and verified 2026-09-27 |
-| 30 Software template `python-service` | Live demo done 2026-09-27: form -> running in 5m31s (~2 min machine time) |
+| 30 Software template `python-service` | **v2 done and verified 2026-10-10**: form -> live service in 2m46s with zero clicks; a later push deploys itself in ~6.5 min (TEMPLATES_RESEARCH section 13) |
+| Guardrails F4/F5 (AppProjects, Pod Security labels), F10 (ESO 2.11.0, `v1` API) | Merged and verified on the cluster 2026-10-10 |
 | 31 plugins, 33 Kyverno suite, 34 observability, 35 DR drill, 36 e2e rewrite | Not started |
 
-**How a session works:** `make up` (~21-27 min, creates 20-data -> 30-cluster -> 40-platform;
-Argo CD then deploys everything from idp-gitops) -> work -> `make down` (~16 min, must exit 0).
-Cost while up: ~$0.26/hr (~$0.80 per 3-hour session, section 3).
+**How a session works:** `aws sso login --profile idp`, then
+`TF_VAR_allowed_cidr="$(curl -s https://checkip.amazonaws.com)/32" make up` (~27 min; the ISP
+rotates the address, so the default in 30-cluster/variables.tf is usually stale) -> work ->
+`make down` (~16 min, must exit 0). Cost while up: ~$0.26/hr. **Merge everything first, then
+`make up`:** 40-platform reads the local checkout and Argo CD reads idp-gitops `main`.
 
-**Delivery chain (verified end to end):** push to an app repo -> CI (tests, arm64 image,
-Trivy gate, push to ECR via OIDC) -> CI bot commits the new tag to idp-gitops -> Argo CD
-auto-syncs -> rolling update with zero dropped requests.
+**Delivery chains (both verified end to end):**
+- feature-flag-service, idp-portal: push -> CI (tests, arm64 image, push to ECR via OIDC, Trivy
+  gate) -> CI bot commits the new tag to idp-gitops -> Argo CD auto-syncs -> zero-downtime rollout.
+- Golden-path services (template v2): push -> shared CI workflow (`surya-idp/idp-platform`) ->
+  ECR `svc/<name>` -> **Argo CD Image Updater** commits the tag as `idp-ci-bot[bot]` (signed) ->
+  Argo CD syncs. Service repos hold no credential for idp-gitops.
 
-**Session 6 (2026-09-27) summary:** Step 29 verified; Step 30 built (template, narrow CI role
-`idp-service-ci`, GitHub App `ff-idp-backstage`, credentials from `~/.idp`); project renamed
-ff-idp -> idp (section 0, Finding 50); Terraform state locking turned on (Finding 49);
-CI hardened (Finding 48 fixed); stale `argocd/application.yaml` and old catalog data removed
-from feature-flag-service.
+**Session 9 (2026-10-10):** template v2 phases 1-4 built offline, merged, and proven on a cluster
+session the same day. New: repo `idp-platform` (reusable CI workflow, tag v1.0.0); idp-gitops
+`components/golden-path` + `public-route`, ApplicationSet `golden-path-services`, Image Updater
+v1.3.1; idp-portal scaffolder action `idp:github:await-ci-auto-merge`, skeleton v2, template CI
+(`scripts/test-template.sh`); idp-infra role `idp-image-updater` and secret `idp/ci-bot-github-app`
+(`~/.idp/ci-bot-app.env` + `.pem`). Decisions: Kustomize components (not a shared chart); the
+Backstage App left the idp-gitops ruleset bypass list and "Allow auto-merge" is on. Findings 57-61
+(section 13). All draft PRs from Session 7 (guardrails, ESO) merged in the planned order.
 
-**Session 7 offline work (2026-09-27, after make down):** PLATFORM_REVIEW section 5a has the status.
-Done: idp-gitops ruleset + `validate` required check (F2), lock files (F6), IaC CI (F7), SHA-pinned
-actions + Dependabot + CodeQL + secret scanning (F11), PAT secret deleted (F8), old ff-idp bucket/table
-deleted, Apps renamed (bot now commits as `idp-ci-bot[bot]`). Prepared as DRAFT PRs (need a cluster):
-AppProjects + PSA (F4/F5), ESO 2.11.0 + v1 API (F10), terraform plan/drift CI (F7). Merge order and
-manual steps: section 16b. **idp-gitops main is protected: humans change it only through PRs.**
+**Read `PLATFORM_REVIEW.md` before new work** (section 5a = progress). Still open: apps use the RDS
+master user (F3), ESO + ALB controller installed by Terraform (F9), IRSA not Pod Identity (F12),
+no NetworkPolicy / Valkey TLS (F13), no observability (F14), Backstage guest + no permissions (F15).
 
-**Read `PLATFORM_REVIEW.md` (this repo) before new work.** It maps every part of the platform
-against industry practice (sourced) and ranks 16 flaws. The top ones: a long-lived admin access key on
-the laptop (F1), idp-gitops main unprotected (F2), apps using the RDS master user (F3), everything in
-the `default` Argo AppProject and no Pod Security Admission/Kyverno (F4, F5), no observability
-(F14). Its section 5 is the merged work order. The user's rule: where we differ from industry
-without a real reason, follow industry. Open decisions: GitHub org (F16), Identity Center (F1),
-the template decisions.
+**Templates: read `TEMPLATES_RESEARCH.md` before template work.** Phases 1-4 are done (section 13
+has the evidence). Next: phase 5 (SBOM, signing, provenance), phase 6 (day-2 templates:
+add-feature-flag, add-postgres-database after F3, decommission-service).
 
-**Templates: read `TEMPLATES_RESEARCH.md` (this repo) before any template work.** The first live
-run (2026-09-27) proved the chain but also showed `python-service` v1 is a starter, not a golden
-path: dev needs a human merge (G1), **later pushes to a generated service never deploy (G2,
-Finding 55)**, and there are no tests, lint, docs, observability or supply-chain controls. That
-file has the industry research, the gap matrix, the zero-touch design (ApplicationSet + Argo CD
-Image Updater + an await-and-merge scaffolder action) and the phased plan. The user's direction
-(2026-09-27): dev must be 100% automated; templates must be industry-grade, not toys.
+**Next session:** the user's choice; options and small follow-ups are in
+`~/projects/idp-study-guide/00-WHERE-WE-ARE.md` section 3. Checklist in section 16b.
 
-**Next session:** PLATFORM_REVIEW.md section 5 order (decide F16 first; offline fixes before
-cluster time), which includes TEMPLATES_RESEARCH.md phases 1-4. Build and render-test offline; `make up` only to verify. Checklist
-in section 16b. The earlier plan (flag helper in the skeleton, Template 2 `add-feature-flag`) is
-now phases 3 and 6 of that plan. The one-Location fix (`templates/all-templates.yaml`) is done
-(Finding 53): a new template is a git push, no image rebuild.
-
-Small pending items: GitHub Apps were renamed in the UI (section 0); code refs + `IDP_CI_BOT_*`
-secrets still to do (needs a new CI bot key). Delete the unused `ENV_CONFIG_REPO_PAT` secret in
-feature-flag-service (Step 12 leftover, long-lived PAT; PLATFORM_REVIEW F8).
+Small pending items: delete the inactive `idp-admin` access key and `~/.aws/credentials.disabled`
+/ `.bak`; uninstall leftover personal-account App installations; idp-portal `.trivyignore` expires
+2026-12-10; feature-flag-service and idp-portal still use the CI bot key (move them to Image Updater).
 
 ---
 
@@ -221,13 +211,14 @@ orphaned snapshots. Must be true. Set and verified in 20-data/main.tf.
 
 ---
 
-## 5. Repository State (as of 2026-09-27)
+## 5. Repository State (as of 2026-10-10)
 
 | Repo | Local path | What it holds |
 |---|---|---|
 | [idp-infra](https://github.com/surya-idp/idp-infra) | `~/projects/idp-infra` | Terraform layers, Makefile, `scripts/` (down.sh, verify-empty.py, load-local-secrets.sh), `tests/rollout-load.js`, this doc, `PLATFORM_REVIEW.md`, `TEMPLATES_RESEARCH.md` |
 | [idp-gitops](https://github.com/surya-idp/idp-gitops) | `~/projects/idp-gitops` | Everything Argo CD deploys (layout below). Nothing is applied by hand |
-| [idp-portal](https://github.com/surya-idp/idp-portal) (public) | `~/projects/idp-portal` | Backstage 1.54 app, its CI, `templates/all-templates.yaml` + `templates/python-service/` |
+| [idp-portal](https://github.com/surya-idp/idp-portal) (public) | `~/projects/idp-portal` | Backstage 1.54 app, its CI, `templates/all-templates.yaml` + `templates/python-service/` (v2), custom scaffolder action in `packages/backend/src/scaffolder/`, template CI in `scripts/` |
+| [idp-platform](https://github.com/surya-idp/idp-platform) (public, since 2026-10-10) | `~/projects/idp-platform` | Reusable CI workflow `python-service.yml` for golden-path services (tag v1.0.0), tested against `tests/fixture-service` |
 | [feature-flag-service](https://github.com/surya-idp/feature-flag-service) | `~/projects/feature-flag-service` | The flag API (FastAPI, Alembic), its CI, `catalog-info.yaml` |
 
 Cleaned 2026-09-27: one-off helper scripts, old transcripts, duplicate kubectl/terraform
@@ -243,14 +234,22 @@ platform/argocd-apps/        app-of-apps children of the root app (root is creat
   platform-cluster.yaml      wave 0: platform/cluster
   feature-flag-dev.yaml      wave 1: apps/feature-flag-service/overlays/dev -> ns feature-flag-dev
   idp-portal.yaml            wave 1: apps/idp-portal/overlays/dev -> ns backstage
-  <service>.yaml             added by each python-service template PR
+  projects.yaml              wave -1: AppProjects default (locked), platform, apps
+  image-updater.yaml         wave 1: platform/image-updater
+  golden-path-services.yaml  ApplicationSet: apps/*/overlays/dev -> Application <name> (project apps)
 platform/cluster/            ClusterSecretStore (Secrets Manager), PriorityClass business-critical
+platform/image-updater/      Argo CD Image Updater v1.3.1 (ECR login via IRSA, commits as idp-ci-bot)
+components/golden-path/      shared deploy standard for template services (rollout, pod security, probes, HPA metric, PDB)
+components/public-route/     shared-ALB annotations for a service's Ingress
+tests/golden-path-service/   sample service rendered by validate.sh (never deployed)
+apps/<service>/              added by the template's PR: only the service's own values
 platform/kyverno/            parked, not synced (Step 33)
 apps/feature-flag-service/   base (deployment, service, ingress, externalsecret, migrate-job hook,
                              hpa + pdb in wave 3) + overlays dev/staging/prod (only dev deployed)
 apps/idp-portal/             base (deployment, service, 2 externalsecrets) + overlays/dev
 ```
-CI bots only ever change `newTag:` in `apps/*/overlays/dev/kustomization.yaml`.
+CI bots and Image Updater only ever change `newTag:` in `apps/*/overlays/dev/kustomization.yaml`.
+`scripts/validate.sh` pins the public CRD schema catalog by commit (Finding 59).
 
 ## 6. What Is Done — Steps 1–23 (history; current status is in section 0a)
 
@@ -479,9 +478,12 @@ the tag exists -> Trivy (local image) -> bot bumps `apps/idp-portal/overlays/dev
 `concurrency: ci-<sha>`.
 
 ### Services created by the python-service template
-Their CI (copied from `templates/python-service/skeleton/.github/workflows/ci.yml`) assumes
-`idp-service-ci`, creates ECR `svc/<name>` on first run and pushes the image. The deploy
-config is added by the template's PR to idp-gitops, pinned to the first commit SHA.
+Their CI is a ~20-line caller of `surya-idp/idp-platform/.github/workflows/python-service.yml`,
+pinned by commit: ruff, format check, mypy, pytest + coverage gate, arm64 image, Trivy, then on
+main: assume `idp-service-ci`, create ECR `svc/<name>` on first run, push. The deploy config is
+added by the template's PR to idp-gitops, pinned to the first commit SHA; the template merges that
+PR itself after the first CI run is green. Later tags are committed by Argo CD Image Updater.
+idp-portal CI also has a `template` job: scaffolder dry run + the rendered service's checks.
 
 ### OIDC trust (00-bootstrap)
 `sub` embeds immutable IDs: `repo:surya-idp@334455734/<repo>@<repo_id>:ref:refs/heads/main`
@@ -495,11 +497,13 @@ Renaming a repo changes `sub` (the name is in it): update the trust before pushi
 ### GitHub Apps
 | App | ID | Installed on | Used by |
 |---|---|---|---|
-| `idp-ci-bot` (was ff-idp-ci-bot) | 5034584 | org surya-idp (All repositories for now; narrow to idp-gitops) | CI bumps; commits as `idp-ci-bot[bot]` (name from the token's app-slug). Secrets `FF_IDP_CI_BOT_APP_ID` / `FF_IDP_CI_BOT_PRIVATE_KEY` in feature-flag-service and idp-portal (to be replaced by Image Updater) |
+| `idp-ci-bot` (was ff-idp-ci-bot) | 5034584 (installation 165415314) | org surya-idp, only idp-gitops | CI bumps for feature-flag-service and idp-portal (secrets `FF_IDP_CI_BOT_APP_ID` / `FF_IDP_CI_BOT_PRIVATE_KEY` in those repos) and Argo CD Image Updater in the cluster (key from `~/.idp/ci-bot-app.pem` -> Secrets Manager `idp/ci-bot-github-app`). Commits as `idp-ci-bot[bot]`. Keys: App settings -> Credentials -> Key pairs |
 | `idp-backstage-surya` (was ff-idp-backstage; NOT "idp-backstage") | 5088974 (client Iv23lij5ChFBE8WFtPEH) | org surya-idp, All repositories | Backstage catalog + scaffolder + GitHub sign-in. Credentials in `~/.idp` (700/600), never in Git or TF state. Actions: read not granted yet (Step 31) |
 
 Both Apps are owned by org surya-idp (transferred 2026-09-27; IDs, client ID and keys unchanged).
-Both bypass the idp-gitops ruleset (bypass actors = these App IDs).
+Only `idp-ci-bot` bypasses the idp-gitops ruleset (since 2026-10-10). `idp-backstage-surya` opens
+PRs and merges them only when the required `validate` check is green; "Allow auto-merge" and
+"Delete head branch on merge" are on for idp-gitops.
 
 ## 12. Key Terraform Snippets
 
@@ -676,6 +680,16 @@ resource "aws_db_instance" "postgres" {
 **Finding 50: Renaming a "permanent" layer is a state migration, not a find-and-replace.** S3 buckets and security groups cannot be renamed; IAM roles are replaced. Done as: `state rm` old bucket/table (kept as backup) -> apply new -> `s3 sync` state -> `init -reconfigure` per layer -> no-change plans prove code == AWS. The GitHub OIDC `sub` claim contains the repo NAME, so renaming a repo breaks CI until the trust policy matches (IDs are stable, names are not).
 **Finding 51: Neon retired.** The Step 21 A/B was the only reason to keep the Neon project (Step 11, `90-legacy-neon`). With the result recorded (section 16a: p95 ~970 ms -> ~20 ms), the project was destroyed and the layer, its tfvars (Neon API key) and `make neon-plan` removed. Nothing deployed ever read from Neon after Step 21 (DATABASE_URL comes from idp/db-creds = RDS).
 **Finding 56: Transferring a repo to an org silently drops security settings and ruleset bypass actors.** After moving the 4 repos to surya-idp (2026-09-27): secret scanning, push protection and CodeQL default setup were all back to disabled, and the idp-gitops ruleset kept its rules but lost its App bypass list (bot pushes to main would have been rejected). Repo IDs, secrets, rulesets, PRs and Dependabot config survived. Re-enabled/restored immediately; verified with a real CI bot push (dfb88f3, 6728c5e). Checklist for any transfer: re-check `security_and_analysis`, code-scanning default setup and each ruleset's `bypass_actors`.
+
+**Finding 57: User input must not reach generated code (Session 9, first live template run).** A description typed with a trailing space was rendered into a Python docstring; the new repo's first CI run failed `ruff format --check`. The auto-merge action correctly refused to merge. Fix (idp-portal#26): trim the description, keep it out of code, write it into TOML/YAML with the Nunjucks `dump` filter; template CI renders a hostile description (quotes, colon, backslash, spaces, >100 chars).
+
+**Finding 58: The scaffolder validates action input against the schema but does not apply schema defaults.** `idp:github:await-ci-auto-merge` declared `mergeMethod` and `timeoutMinutes` with zod `.default()`; both arrived `undefined`, GitHub rejected the mutation, and the timeout was `NaN` (no timeout at all). Unit tests called the logic with every option set, so only a real run showed it. Fix (idp-portal#27): defaults applied in the handler; the template passes both.
+
+**Finding 59: An unpinned schema download broke the required check.** datreeio/CRDs-catalog updated its external-secrets.io schemas on 2026-10-08; kubeconform v0.8.0 cannot load the new ClusterSecretStore v1 schema ("could not find schema"), so `validate` went red on idp-gitops `main` with no change of ours, which would have blocked every PR including template deploy PRs. Fix (idp-gitops#10): `CRD_CATALOG_REF` pinned to the commit before that update. Related: the catalog's ImageUpdater schema was older than v1.3.1, so `validate.sh` now generates schemas from the CRDs a kustomization installs (`scripts/crd-schemas.py`).
+
+**Finding 60: An image gate also fires on old code.** idp-portal had not been built since 2026-09-27; on the next merge its Trivy gate found 14 HIGH/CRITICAL fixable findings and (correctly) blocked the deploy, so the cluster kept the old Backstage image without the new action. Fix (idp-portal#23): 12 in-range lockfile updates; 2 findings inside `mockttp` (shipped by `@backstage/backend-openapi-utils`, never started; fixes are majors it does not accept) ignored in `.trivyignore` until 2026-12-10. Lesson: review Dependabot PRs before a session, or the first merge of the day pays for two weeks of drift.
+
+**Finding 61: A commit SHA made only of digits breaks a kustomization.** `newTag: 0000...` is parsed as a number ("cannot unmarshal number into ... newTag of type string"). Found with the all-zero sample tag. The template now quotes `newTag`.
 **Finding 27: Spend audit.** As of 2026-09-26, ~$1 of credits used over 3 sessions, consistent with the ~$0.73/session model. Cost Explorer lags ~24h and shows ~$0; use Billing > Credits for the real balance. All regions checked empty.
 
 ---
@@ -814,17 +828,17 @@ Build+teardown overhead is ~43 min of billing (~$0.20) even for a 5-minute test.
 ---
 
 ## 16b. Next Session Checklist
-Steps 23-27 are VERIFIED. A session is now: `make up` -> everything deploys itself -> work -> `make down`.
-1. `aws sso login --profile idp`, then `aws sts get-caller-identity --profile idp` (SSO role, not an IAM user), check `curl -s https://checkip.amazonaws.com` matches `allowed_cidr` in 30-cluster/variables.tf, then `make up` (~21-27 min). It waits for the root app to be Healthy.
-2. Check: `kubectl get applications -n argocd` all Synced/Healthy; ALB: `kubectl get ingress -n feature-flag-dev`.
-3. No manual secret or migration steps any more (JWT generated, alembic Job automatic).
-4. Open Backstage: `kubectl port-forward svc/idp-portal -n backstage 7007:7007` -> http://localhost:7007 (guest sign-in).
-4a. (DONE 2026-09-27) BEFORE `make up` (manual, user): (1) `terraform -chdir=10-network apply` -> exactly 2 in-place changes (public subnets map_public_ip_on_launch -> false). (2) For PR idp-infra#10: `git checkout ci/terraform-plan`, `terraform -chdir=00-bootstrap plan` -> exactly 2 to add (role idp-infra-plan + its policy), apply, back to main, then mark #10 ready and merge.
-4c. Manual, user (after the org migration): (1) `terraform -chdir=00-bootstrap plan` -> exactly 3 to change (only `-` DSurya11 lines in github_ci, service_ci, infra_plan), then apply (PR #14 is merged). (2) https://github.com/organizations/surya-idp/settings/installations -> idp-ci-bot -> Configure -> "Only select repositories": idp-gitops. (3) https://github.com/settings/installations (personal account): uninstall any leftover idp-ci-bot / idp-backstage-surya installation. (4) After ~2026-10-04: delete the inactive idp-admin access key + `~/.aws/credentials.disabled` / `.bak`.
-4b. Merge the draft PRs in this ORDER, then `make up` (all under github.com/surya-idp/...): idp-infra#8 (bootstrap AppProject) -> idp-infra#9 + idp-gitops#5 (ESO 2.11.0 + v1, together) -> idp-gitops#4 (AppProjects + PSA; locks `default`) -> idp-portal#6 (template). Each PR body lists its verification commands. If anything breaks, revert that PR in idp-gitops (through a PR) and re-sync.
-5. NEXT WORK: TEMPLATES_RESEARCH.md phase 1 (zero-touch dev delivery), then phases 2-4. Step 30 demo is done (section 17). Backstage: sign in with GitHub (not guest) to run templates. `hello-svc` (the 2026-09-27 demo) was deleted by user decision; the next demo service comes from template v2.
-6. The first `make up` on the new bucket succeeded (2026-09-27): the old backups `ff-idp-tfstate-693906847772` (versioned: delete all versions) and `ff-idp-tf-locks` can be deleted.
-7. `make down` must exit 0 and you must SEE it finish (Finding 37). Re-run it if interrupted.
+A session is: merge what should be tested -> `make up` -> everything deploys itself -> work -> `make down`.
+1. Merge first. 40-platform is applied from the local checkout (`git pull` in idp-infra) and Argo CD reads idp-gitops `main`. On 2026-10-10 `make up` was started before the merges and they had to be done mid-run.
+2. `aws sso login --profile idp` (username `surya`, not the email), then `aws sts get-caller-identity --profile idp` (SSO role).
+3. `TF_VAR_allowed_cidr="$(curl -s https://checkip.amazonaws.com)/32" make up` (~27 min). If the IP changes mid-session: `terraform -chdir=30-cluster apply -var "allowed_cidr=<new>/32" -auto-approve`.
+4. Check: `kubectl get applications,applicationsets -n argocd` all Synced/Healthy (root, platform-cluster, feature-flag-dev, idp-portal, image-updater); `kubectl -n argocd get imageupdater` Ready; `kubectl get externalsecret -A` all SecretSynced.
+5. Backstage: `kubectl port-forward svc/idp-portal -n backstage 7007:7007` -> http://localhost:7007, sign in with GitHub (not guest) to run templates. The port-forward drops whenever a new idp-portal image rolls out.
+6. Template check: Create -> Python service -> the task must end green and `http://<ALB>/<name>/` must return 200 with no click after the form.
+7. Clean up test services before or after `make down`: remove `apps/<name>` from idp-gitops (PR), delete ECR `svc/<name>`, delete the GitHub repo (`gh auth refresh -s delete_repo` once). A decommission template (T4) should replace this.
+8. `make down` must exit 0 and you must SEE it finish (Finding 37). Re-run it if interrupted. Then `make verify-empty`.
+9. Claude cannot merge PRs, push tags, or run Terraform apply in this setup (permission classifier): those are handed to the user as exact commands.
+10. Manual, user, still open: delete the inactive idp-admin access key + `~/.aws/credentials.disabled` / `.bak`; uninstall leftover personal-account App installations (https://github.com/settings/installations). The 00-bootstrap trust clean-up looks applied (no DSurya11 subject in the role trust policies on 2026-10-10); confirm with `terraform -chdir=00-bootstrap plan`.
 
 ---
 
