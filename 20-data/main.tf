@@ -196,7 +196,13 @@ resource "aws_secretsmanager_secret_version" "jwt_secret" {
   }
 }
 
-# Grafana admin password — placeholder
+# Grafana admin password: generated per session like the JWT key (nothing to remember or
+# rotate; read it with the command in the idp-gitops README when you need to log in).
+resource "random_password" "grafana" {
+  length  = 32
+  special = false
+}
+
 resource "aws_secretsmanager_secret" "grafana_admin" {
   name                    = "idp/grafana-admin"
   description             = "Grafana admin password"
@@ -206,12 +212,9 @@ resource "aws_secretsmanager_secret" "grafana_admin" {
 resource "aws_secretsmanager_secret_version" "grafana_admin" {
   secret_id = aws_secretsmanager_secret.grafana_admin.id
   secret_string = jsonencode({
-    admin-password = "REPLACE_ME_before_first_cluster_up"
+    admin-user     = "admin"
+    admin-password = random_password.grafana.result
   })
-
-  lifecycle {
-    ignore_changes = [secret_string]
-  }
 }
 
 # Backstage GitHub App — placeholder; populated in Step 29

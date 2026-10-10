@@ -337,9 +337,13 @@ module "eks" {
         EOT
       }]
 
+      # Three nodes since the observability stack (Prometheus, Grafana, Loki, Tempo: about
+      # 1.2 GiB of requests) joined Kyverno, the database operator and Image Updater. Two
+      # 2 GiB nodes were at 52-57% memory with the platform before any of those.
+      # One more t4g.small is about $0.017/hr.
       min_size     = 2
-      max_size     = 3
-      desired_size = 2
+      max_size     = 4
+      desired_size = 3
 
       # Nodes go into private subnets — never publicly reachable
       subnet_ids = data.terraform_remote_state.network.outputs.private_subnet_ids
