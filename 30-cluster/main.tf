@@ -189,10 +189,11 @@ resource "aws_elasticache_replication_group" "valkey" {
   subnet_group_name  = aws_elasticache_subnet_group.valkey.name
   security_group_ids = [data.terraform_remote_state.network.outputs.sg_elasticache_id]
 
-  # At rest: free, transparent to clients. In transit: needs TLS in every client (rediss://),
-  # tracked as PLATFORM_REVIEW F13; .trivyignore.yaml records the exception until then.
+  # At rest: free, transparent to clients. In transit (PLATFORM_REVIEW F13, on since
+  # 2026-10-10): every connection is TLS, so the client must use rediss:// (the URL published
+  # below). The flag API's redis client reads the scheme from the URL; no code change.
   at_rest_encryption_enabled = true
-  transit_encryption_enabled = false
+  transit_encryption_enabled = true
 
   # lifecycle: ignore auth_token fields — the v6 AWS provider schema wrote
   # auth_token_wo into state during an aborted apply. The v5 provider sees this
@@ -219,7 +220,9 @@ resource "aws_secretsmanager_secret" "valkey" {
 resource "aws_secretsmanager_secret_version" "valkey" {
   secret_id = aws_secretsmanager_secret.valkey.id
   secret_string = jsonencode({
-    url = "redis://${aws_elasticache_replication_group.valkey.primary_endpoint_address}:6379"
+    # rediss:// = TLS. ElastiCache presents a certificate from Amazon's public CA, which
+    # clients already trust.
+    url = "rediss://${aws_elasticache_replication_group.valkey.primary_endpoint_address}:6379"
   })
 }
 
@@ -302,6 +305,10 @@ module "eks" {
           ENABLE_PREFIX_DELEGATION = "true"
           WARM_PREFIX_TARGET       = "1"
         }
+        # Makes the VPC CNI ENFORCE Kubernetes NetworkPolicy (PLATFORM_REVIEW F13). Without
+        # it NetworkPolicy objects are accepted by the API and do nothing. It starts a small
+        # agent container next to the CNI on every node.
+        enableNetworkPolicy = "true"
       })
     }
     coredns = {
