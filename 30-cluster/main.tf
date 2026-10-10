@@ -606,6 +606,73 @@ resource "aws_iam_role_policy" "portal" {
 }
 
 # =============================================================================
+# IRSA — Kyverno admission controller
+# =============================================================================
+# The policy verify-image-provenance (idp-gitops/platform/kyverno) reads an image's signed
+# build provenance from ECR before a pod is admitted. Read-only, repositories under svc/* only.
+
+data "aws_iam_policy_document" "kyverno_assume_role" {
+  statement {
+    actions = ["sts:AssumeRoleWithWebIdentity"]
+
+    principals {
+      type        = "Federated"
+      identifiers = [module.eks.oidc_provider_arn]
+    }
+
+    condition {
+      test     = "StringEquals"
+      variable = "${replace(module.eks.cluster_oidc_issuer_url, "https://", "")}:sub"
+      values   = ["system:serviceaccount:kyverno:kyverno-admission-controller"]
+    }
+
+    condition {
+      test     = "StringEquals"
+      variable = "${replace(module.eks.cluster_oidc_issuer_url, "https://", "")}:aud"
+      values   = ["sts.amazonaws.com"]
+    }
+  }
+}
+
+data "aws_iam_policy_document" "kyverno_policy" {
+  statement {
+    sid       = "ECRAuth"
+    actions   = ["ecr:GetAuthorizationToken"]
+    resources = ["*"] # this action does not support resource-level permissions
+  }
+
+  statement {
+    sid = "ReadSvcRepos"
+    actions = [
+      "ecr:BatchGetImage",
+      "ecr:BatchCheckLayerAvailability",
+      "ecr:GetDownloadUrlForLayer",
+      "ecr:DescribeImages",
+      "ecr:ListImages",
+    ]
+    resources = [
+      "arn:aws:ecr:ap-south-1:${data.aws_caller_identity.current.account_id}:repository/svc/*",
+    ]
+  }
+}
+
+resource "aws_iam_role" "kyverno" {
+  # idp-gitops/platform/argocd-apps/kyverno.yaml refers to this name.
+  name               = "idp-kyverno"
+  assume_role_policy = data.aws_iam_policy_document.kyverno_assume_role.json
+
+  tags = {
+    Name = "idp-kyverno"
+  }
+}
+
+resource "aws_iam_role_policy" "kyverno" {
+  name   = "idp-kyverno-ecr-read"
+  role   = aws_iam_role.kyverno.id
+  policy = data.aws_iam_policy_document.kyverno_policy.json
+}
+
+# =============================================================================
 # EBS CSI driver - REMOVED (Step 29)
 # =============================================================================
 # Nothing in the cluster uses EBS volumes, and its controller (2 replicas x 6
