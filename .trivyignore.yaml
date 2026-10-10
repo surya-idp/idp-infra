@@ -11,6 +11,3 @@ misconfigurations:
     statement: "Public EKS endpoint, restricted to the operator's /32 (var.allowed_cidr). No VPN in a solo lab. Production: private endpoint + VPN/bastion."
   - id: AWS-0041
     statement: "The only public CIDR allowed on the EKS endpoint is the operator's /32 (var.allowed_cidr)."
-  - id: AWS-0051
-    paths: ["30-cluster/main.tf"]
-    statement: "Valkey in-transit encryption needs TLS (rediss://) in every client; tracked as PLATFORM_REVIEW F13. At-rest encryption is on."
