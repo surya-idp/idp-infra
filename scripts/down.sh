@@ -24,7 +24,9 @@ if aws eks describe-cluster --name "$CLUSTER" --region "$REGION" >/dev/null 2>&1
   # Argo CD selfHeal would recreate a deleted Ingress, so delete the root Application
   # instead: its finalizer cascades to the children, which delete their resources
   # (Ingress included) while the ALB controller is still running.
-  kubectl delete application root -n argocd --ignore-not-found --timeout=300s 2>&1 \
+  # Children are removed in reverse wave order (apps first, the load balancer controller
+  # last), so this takes longer than when the root had three children.
+  kubectl delete application root -n argocd --ignore-not-found --timeout=600s 2>&1 \
     || echo "WARN: root app delete timed out; falling back to direct deletes"
   kubectl delete ingress --all --all-namespaces --timeout=120s 2>&1 \
     || echo "WARN: ingress delete failed/timed out; falling back to direct ALB delete"

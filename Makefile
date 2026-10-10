@@ -55,13 +55,13 @@ up:
 	  --region $(REGION) \
 	  --profile $(PROFILE)
 	@echo ""
-	@echo "==> [4/4] Creating platform layer (Argo CD + ESO)..."
+	@echo "==> [4/4] Creating platform layer (Argo CD; it installs everything else from idp-gitops)..."
 	terraform -chdir=40-platform init -input=false
 	terraform -chdir=40-platform apply -auto-approve
 	@echo ""
 	@echo "==> Waiting for Argo CD root app to be Healthy..."
 	kubectl wait --for=jsonpath='{.status.health.status}'=Healthy application/root \
-	  -n argocd --timeout=600s || echo "WARN: root app not Healthy yet - check: kubectl get applications -n argocd"
+	  -n argocd --timeout=900s || echo "WARN: root app not Healthy yet - check: kubectl get applications -n argocd"
 	@echo ""
 	@echo "╔══════════════════════════════════════════════╗"
 	@echo "║         Environment ready!                   ║"
