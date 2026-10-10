@@ -25,7 +25,7 @@ REGION   := ap-south-1
 #   - Argo CD and all platform components
 #
 # COST AFTER make down: $0.00/month
-# COST DURING SESSION:  ~$0.26/hr (EKS, 2x t4g.small on-demand, NAT, ALB, RDS, Valkey; HANDOVER section 3)
+# COST DURING SESSION:  ~$0.28/hr (EKS, 3x t4g.small on-demand, NAT, ALB, RDS, Valkey; HANDOVER section 3)
 #
 # IMPORTANT: verify-empty MUST pass before closing laptop.
 # If it shows any resources, something did not destroy cleanly — investigate.
