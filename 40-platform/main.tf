@@ -144,7 +144,7 @@ resource "helm_release" "eso" {
   name             = "external-secrets"
   repository       = "https://charts.external-secrets.io"
   chart            = "external-secrets"
-  version          = "0.10.3"
+  version          = "2.11.0" # serves external-secrets.io/v1 only (v1beta1 opt-in, off)
   namespace        = kubernetes_namespace.external_secrets.metadata[0].name
   create_namespace = false
   wait             = true
