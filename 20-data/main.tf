@@ -217,7 +217,7 @@ resource "aws_secretsmanager_secret_version" "grafana_admin" {
 # Backstage GitHub App — placeholder; populated in Step 29
 resource "aws_secretsmanager_secret" "backstage_github_app" {
   name                    = "idp/backstage-github-app"
-  description             = "Backstage GitHub App ff-idp-backstage (appId, clientId, clientSecret, privateKey)"
+  description             = "Backstage GitHub App idp-backstage (appId, clientId, clientSecret, privateKey)"
   recovery_window_in_days = 0
 }
 

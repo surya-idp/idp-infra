@@ -354,7 +354,28 @@ resource "helm_release" "argocd" {
 # =============================================================================
 
 locals {
+  # Project "bootstrap" holds only the root app: it may create Applications and AppProjects
+  # in the argocd namespace, nothing else. idp-gitops then locks "default" (PLATFORM_REVIEW F4).
   argocd_root_app = <<-YAML
+    apiVersion: argoproj.io/v1alpha1
+    kind: AppProject
+    metadata:
+      name: bootstrap
+      namespace: argocd
+    spec:
+      description: The root app-of-apps only
+      sourceRepos:
+        - https://github.com/surya-idp/idp-gitops
+      destinations:
+        - server: https://kubernetes.default.svc
+          namespace: argocd
+      clusterResourceWhitelist: []
+      namespaceResourceWhitelist:
+        - group: argoproj.io
+          kind: Application
+        - group: argoproj.io
+          kind: AppProject
+    ---
     apiVersion: argoproj.io/v1alpha1
     kind: Application
     metadata:
@@ -363,7 +384,7 @@ locals {
       finalizers:
         - resources-finalizer.argocd.argoproj.io
     spec:
-      project: default
+      project: bootstrap
       source:
         repoURL: https://github.com/surya-idp/idp-gitops
         targetRevision: HEAD
