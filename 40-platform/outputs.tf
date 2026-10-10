@@ -12,11 +12,6 @@ output "argocd_initial_password_command" {
   value       = "kubectl get secret argocd-initial-admin-secret -n argocd -o jsonpath='{.data.password}' | base64 -d && echo"
 }
 
-output "eso_namespace" {
-  description = "Namespace where ESO is installed"
-  value       = kubernetes_namespace.external_secrets.metadata[0].name
-}
-
 output "argocd_namespace" {
   description = "Namespace where Argo CD is installed"
   value       = kubernetes_namespace.argocd.metadata[0].name
