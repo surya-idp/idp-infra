@@ -50,6 +50,11 @@ output "image_updater_irsa_role_arn" {
   value       = aws_iam_role.image_updater.arn
 }
 
+output "portal_irsa_role_arn" {
+  description = "IAM role ARN for Backstage (annotated on its ServiceAccount in idp-gitops)"
+  value       = aws_iam_role.portal.arn
+}
+
 # ─── ElastiCache Valkey ───────────────────────────────────────────────────────
 
 output "valkey_primary_endpoint" {
