@@ -228,7 +228,7 @@ Each item ends with command output as evidence, per the HANDOVER convention.
 
 ---
 
-## 5a. Progress (2026-09-27, cluster down, $0)
+## 5a. Progress (2026-10-10, cluster down, $0)
 
 | ID | Status | Evidence / where |
 |---|---|---|
@@ -237,13 +237,16 @@ Each item ends with command output as evidence, per the HANDOVER convention.
 | F6 | **Done**: lock files committed (linux amd64/arm64, darwin arm64); `.gitignore` excluded them | idp-infra 31d7d6a |
 | F7 | **Static CI done** (fmt, validate, tflint, Trivy IaC gate with reasoned `.trivyignore.yaml`). Plan-on-PR + drift check: idp-infra PR #10 (needs the user to apply the 00-bootstrap role) | CI green on 31d7d6a |
 | F8 | PAT secret deleted from feature-flag-service. The PAT itself: user revokes it | `gh secret list` |
-| F10 | ESO chart 2.11.0 + v1 manifests: idp-infra PR #9 + idp-gitops PR #5 (merge together, verify at `make up`) | validate.sh green on v1 schemas |
+| F10 | **Done 2026-10-10**: ESO chart 2.11.0 + `external-secrets.io/v1` manifests merged (idp-infra#9, idp-gitops#5) and verified on the cluster | pod image `external-secrets:v2.11.0`; all four ExternalSecrets `SecretSynced` |
 | F11 | **Done**: all actions pinned to full SHAs; Dependabot (actions, pip/npm/docker, terraform grouped; Backstage-coupled majors ignored); secret scanning + push protection, Dependabot security updates, CodeQL default setup on all 5 repos | idp-portal c17d263, feature-flag-service 651344a |
-| F4, F5 | AppProjects (bootstrap/default-locked/platform/apps) + PSA baseline-enforce / restricted-warn: idp-infra PR #8, idp-gitops PR #4, idp-portal PR #6 (merge order in HANDOVER 16b) | validate.sh green; no baseline-forbidden fields in rendered overlays |
+| F4, F5 | **Done 2026-10-10**: AppProjects (bootstrap/default-locked/platform/apps) + PSA baseline-enforce / restricted-warn merged (idp-infra#8, idp-gitops#4, idp-portal#6) and verified. Template services go further: the `golden-path` component meets the *restricted* profile (non-root, read-only root, no capabilities, seccomp). Still open in F5: Kyverno suite (Step 33), LimitRange | all Argo apps Synced/Healthy in their projects; template pods admitted with no PSA warning |
 | F13 | RDS `storage_encrypted`, Valkey at-rest encryption (apply at next `make up`); public subnets `map_public_ip_on_launch=false` (10-network: user applies) | Trivy findings AWS-0080/0045/0164 gone |
 | F1 | **Done**: IAM Identity Center (AWS Organizations), user `surya` + authenticator MFA, AdministratorAccess 8h; profile `idp` is SSO; idp-admin access key Inactive (delete after a week) | `aws sts get-caller-identity` -> AWSReservedSSO role; 10-network plan via SSO: No changes |
 | F7 | Plan role applied by the user; PR #10 merged: CI plans 10-network/15-registry on PRs and checks drift on main | plan jobs: No changes |
 | F16 | **Done**: org `surya-idp`; 4 repos transferred (same IDs); Apps owned by and installed on the org; all refs updated; OIDC trust moved (old subjects removed in PR #14, user applies); security settings + ruleset bypass restored after transfer (Finding 56) | CI green under the org: ECR push + bot bumps dfb88f3/6728c5e; plan jobs green |
+| F2 | Tightened 2026-10-10: the Backstage App is off the idp-gitops bypass list (only `idp-ci-bot` bypasses); "Allow auto-merge" on; the CRD schema catalog used by `validate` is pinned by commit | deploy PR of a template service merged by the App only after `validate` passed |
+| F8 | Partly: golden-path service repos hold no deploy-repo credential (Image Updater holds the only copy, in the cluster). feature-flag-service and idp-portal still carry the CI bot key | bot commit `chore(deploy): update hello-svc image` authored by `idp-ci-bot[bot]`, Verified |
+| Templates phases 1-4 | **Done 2026-10-10** (TEMPLATES_RESEARCH section 13): zero-click first deploy, Image Updater, shared CI repo `idp-platform`, Kustomize components, skeleton v2, template CI | form -> ALB 200 in 2m46s; second push live in 6m35s |
 | F3, F9, F12, F14, F15 | Not started (need a cluster session) | - |
 
 Also found: idp-portal has 14 Dependabot alerts (2 high) in dependencies; the image Trivy gate passes,
