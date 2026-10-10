@@ -547,6 +547,65 @@ resource "aws_iam_role_policy" "image_updater" {
 }
 
 # =============================================================================
+# IRSA — Backstage (idp-portal)
+# =============================================================================
+# The decommission-service template deletes a retired service's images. Backstage gets
+# exactly that: delete ECR repositories under svc/* (the prefix template services use).
+# It cannot touch feature-flag-service or idp-portal images, or anything outside ECR.
+
+data "aws_iam_policy_document" "portal_assume_role" {
+  statement {
+    actions = ["sts:AssumeRoleWithWebIdentity"]
+
+    principals {
+      type        = "Federated"
+      identifiers = [module.eks.oidc_provider_arn]
+    }
+
+    condition {
+      test     = "StringEquals"
+      variable = "${replace(module.eks.cluster_oidc_issuer_url, "https://", "")}:sub"
+      values   = ["system:serviceaccount:backstage:idp-portal"]
+    }
+
+    condition {
+      test     = "StringEquals"
+      variable = "${replace(module.eks.cluster_oidc_issuer_url, "https://", "")}:aud"
+      values   = ["sts.amazonaws.com"]
+    }
+  }
+}
+
+data "aws_iam_policy_document" "portal_policy" {
+  statement {
+    sid = "DeleteSvcRepos"
+    actions = [
+      "ecr:DeleteRepository", # with force = also removes the images
+      "ecr:DescribeRepositories",
+    ]
+    resources = [
+      "arn:aws:ecr:ap-south-1:${data.aws_caller_identity.current.account_id}:repository/svc/*",
+    ]
+  }
+}
+
+resource "aws_iam_role" "portal" {
+  # idp-gitops/apps/idp-portal/base/serviceaccount.yaml refers to this name.
+  name               = "idp-portal"
+  assume_role_policy = data.aws_iam_policy_document.portal_assume_role.json
+
+  tags = {
+    Name = "idp-portal"
+  }
+}
+
+resource "aws_iam_role_policy" "portal" {
+  name   = "idp-portal-ecr-delete-svc"
+  role   = aws_iam_role.portal.id
+  policy = data.aws_iam_policy_document.portal_policy.json
+}
+
+# =============================================================================
 # EBS CSI driver - REMOVED (Step 29)
 # =============================================================================
 # Nothing in the cluster uses EBS volumes, and its controller (2 replicas x 6
