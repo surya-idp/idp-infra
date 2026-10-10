@@ -1,27 +1,27 @@
 # =============================================================================
 # 40-platform/main.tf
 #
-# Platform layer — Argo CD + External Secrets Operator (ESO).
+# Platform layer — Argo CD, and nothing else.
 #
-# PHILOSOPHY: Terraform installs ONLY Argo CD and ESO here.
-#   Everything else (Kyverno, ALB Controller, Prometheus, Grafana, app namespaces,
-#   ExternalSecrets, ClusterSecretStore) is installed BY Argo CD via app-of-apps.
-#   Two reconcilers fighting is a real failure mode — Terraform owns the bootstrap,
-#   Argo CD owns everything that Argo CD can manage.
+# PHILOSOPHY: Terraform installs the ONE thing that cannot install itself: Argo CD, plus the
+#   root Application that points it at idp-gitops. Everything else in the cluster is installed
+#   by Argo CD from Git: the AWS Load Balancer Controller, External Secrets, Kyverno, the
+#   database operator, Image Updater, monitoring, and the apps.
+#   Until 2026-10-10 the load balancer controller and External Secrets were Helm releases in
+#   this file too (PLATFORM_REVIEW F9). Two tools reconciling cluster software means two
+#   places to look and upgrades that need a laptop; one reconciler per thing is the rule.
 #
 # LIFECYCLE: DESTROYED every session (make down). Goes with 30-cluster.
 #   Argo CD has no meaningful persistent state — all config is in Git.
 #
-# INSTALL ORDER (sync waves in Argo CD, but also logical dependency):
-#   Wave 0: ESO (ExternalSecret CRDs must exist before apps reference them)
-#   Wave 1: ALB Controller (Ingress resources need this to provision ALBs)
-#   Wave 2: Kyverno (policy enforcement starts after controllers are up)
-#   Wave 3: Prometheus + Grafana + metrics-server
-#   Wave 4: Feature-flag-service app (depends on all above)
+# ORDER after this layer (sync waves of the root app, idp-gitops/platform/argocd-apps):
+#   -3 AppProjects   -2 AWS Load Balancer Controller   -1 External Secrets
+#    0 platform config and controllers (secret store, Kyverno, database operator, monitoring)
+#    1 apps, Image Updater, the ApplicationSet for golden-path services
+#   Teardown runs the same list backwards, so the load balancer controller is still there
+#   when the apps' Ingresses are deleted, and removes their ALB.
 #
-# COST: Argo CD runs on the EKS nodes — no extra AWS cost.
-#   ESO runs on EKS nodes — no extra AWS cost.
-#   ALB Controller provisions an ALB at ~$0.0239/hr — cost starts when app is deployed.
+# COST: everything here runs on the EKS nodes — no extra AWS cost.
 #
 # ARGO CD VERSION: chart 10.9.2 -> Argo CD v3.5.3
 #   Pin to a specific chart version to avoid surprises on make up.
@@ -113,106 +113,6 @@ provider "kubernetes" {
   host                   = data.aws_eks_cluster.this.endpoint
   cluster_ca_certificate = base64decode(data.aws_eks_cluster.this.certificate_authority[0].data)
   token                  = data.aws_eks_cluster_auth.this.token
-}
-
-# =============================================================================
-# EXTERNAL SECRETS OPERATOR (ESO)
-# =============================================================================
-# ESO bridges Kubernetes with AWS Secrets Manager.
-# Installs CRDs: ExternalSecret, ClusterSecretStore, SecretStore.
-# The ESO pod uses IRSA (via ServiceAccount annotation) to call secretsmanager:*.
-#
-# IRSA wiring:
-#   ServiceAccount "external-secrets" in namespace "external-secrets"
-#   → annotated with idp-eso IAM role ARN (from 30-cluster)
-#   → role trust policy allows sts:AssumeRoleWithWebIdentity from this SA
-#
-# Chart: external-secrets/external-secrets
-# installCRDs: true — CRDs installed with the chart (cleaner than separate apply)
-# =============================================================================
-
-resource "kubernetes_namespace" "external_secrets" {
-  metadata {
-    name = "external-secrets"
-    labels = {
-      "app.kubernetes.io/managed-by" = "terraform"
-    }
-  }
-}
-
-resource "helm_release" "eso" {
-  name             = "external-secrets"
-  repository       = "https://charts.external-secrets.io"
-  chart            = "external-secrets"
-  version          = "2.11.0" # serves external-secrets.io/v1 only (v1beta1 opt-in, off)
-  namespace        = kubernetes_namespace.external_secrets.metadata[0].name
-  create_namespace = false
-  wait             = true
-  timeout          = 300
-
-  set {
-    name  = "installCRDs"
-    value = "true"
-  }
-
-  # Wire the ESO controller ServiceAccount to the IRSA role.
-  # The trust policy in 30-cluster is already scoped to this exact SA name + namespace.
-  set {
-    name  = "serviceAccount.annotations.eks\\.amazonaws\\.com/role-arn"
-    value = data.terraform_remote_state.cluster.outputs.eso_irsa_role_arn
-  }
-
-  # The ALB controller registers a mutating webhook on ALL Services; until its pod is
-  # ready, creating any Service (including ESO's) fails with "no endpoints available".
-  depends_on = [kubernetes_namespace.external_secrets, helm_release.alb_controller]
-}
-
-# =============================================================================
-# AWS LOAD BALANCER CONTROLLER
-# =============================================================================
-# Turns Ingress resources into ALBs. Installed here (not by Argo CD) because the
-# Ingress in env-config cannot become healthy without it, and nothing else in the
-# repo installs it yet - Step 26 may move it into an Argo CD app.
-#
-# IRSA role + policy come from 30-cluster (policy version must match chart version).
-# ALBs it creates are NOT tracked by Terraform: scripts/down.sh deletes them
-# before the cluster layer is destroyed.
-# One replica: t4g.small nodes are small and this is a lab.
-# =============================================================================
-
-resource "helm_release" "alb_controller" {
-  name       = "aws-load-balancer-controller"
-  repository = "https://aws.github.io/eks-charts"
-  chart      = "aws-load-balancer-controller"
-  version    = "3.5.0"
-  namespace  = "kube-system"
-  wait       = true
-  timeout    = 300
-
-  set {
-    name  = "clusterName"
-    value = data.terraform_remote_state.cluster.outputs.cluster_name
-  }
-  set {
-    name  = "region"
-    value = "ap-south-1"
-  }
-  set {
-    name  = "vpcId"
-    value = data.aws_eks_cluster.this.vpc_config[0].vpc_id
-  }
-  set {
-    name  = "serviceAccount.name"
-    value = "aws-load-balancer-controller"
-  }
-  set {
-    name  = "serviceAccount.annotations.eks\\.amazonaws\\.com/role-arn"
-    value = data.terraform_remote_state.cluster.outputs.alb_controller_irsa_role_arn
-  }
-  set {
-    name  = "replicaCount"
-    value = "1"
-  }
 }
 
 # =============================================================================
@@ -329,7 +229,7 @@ resource "helm_release" "argocd" {
   EOT
   ]
 
-  depends_on = [kubernetes_namespace.argocd, helm_release.eso]
+  depends_on = [kubernetes_namespace.argocd]
 }
 
 # =============================================================================
@@ -418,6 +318,6 @@ resource "null_resource" "argocd_root_app" {
     command = "kubectl delete application root -n argocd --ignore-not-found=true --timeout=180s || true"
   }
 
-  depends_on = [helm_release.argocd, helm_release.alb_controller]
+  depends_on = [helm_release.argocd]
 }
 

@@ -1,7 +1,7 @@
 # =============================================================================
 # 30-cluster/main.tf
 #
-# Cluster layer — EKS, NAT Gateway, ECR, ElastiCache Valkey, IRSA roles.
+# Cluster layer — EKS, NAT Gateway, ECR, ElastiCache Valkey, pod roles (EKS Pod Identity).
 #
 # LIFECYCLE: DESTROYED every session (make down). Everything here costs money
 #   while running. Nothing here survives a make down — this is intentional.
@@ -29,10 +29,11 @@
 #   $0.016/hr x 24 x 30 = $11.52/month during idle time. Not acceptable.
 #   engine = "valkey" — same Redis API, ~20% cheaper. Never use "redis".
 #
-# IRSA ROLES (three, all here):
-#   - ESO (External Secrets Operator): reads idp/* secrets from Secrets Manager
+# POD ROLES (EKS Pod Identity, all here; the one list of who gets which is in POD IDENTITIES):
+#   - ESO: reads idp/* secrets from Secrets Manager
 #   - ALB Controller: manages AWS ALBs for Ingress resources
-#   - EBS CSI Driver: provisions gp3 EBS volumes for PVCs
+#   - Image Updater: reads ECR svc/*      - Kyverno: reads image attestations in ECR svc/*
+#   - Backstage: deletes ECR svc/* repositories (decommission template)
 #
 # SECURITY NOTE: EKS API server is restricted to var.allowed_cidr (your IP).
 #   If your IP changes between sessions, override: -var 'allowed_cidr=NEW_IP/32'
@@ -263,13 +264,18 @@ module "eks" {
   cluster_enabled_log_types              = ["audit", "authenticator"]
   cloudwatch_log_group_retention_in_days = 1
 
-  # Enable IRSA — creates an OIDC provider for the cluster (required for ESO, ALB Controller, EBS CSI)
+  # The cluster's OIDC provider (IRSA). No role here uses it since the move to EKS Pod
+  # Identity (see POD IDENTITIES below); kept because it is free and is the fallback if a
+  # workload ever needs a role and cannot use Pod Identity.
   enable_irsa = true
 
   # Grant the IAM caller (idp-admin) cluster-admin via EKS API access entries.
   # Without this, kubectl fails with "server has asked for credentials" after creation.
   # The module uses API_AND_CONFIG_MAP auth mode; this adds an access entry automatically.
   enable_cluster_creator_admin_permissions = true
+  # Who may use the Kubernetes API is decided by EKS access entries only (the newer, explicit
+  # mechanism). The default also honours the legacy aws-auth ConfigMap, which nothing here uses.
+  authentication_mode = "API"
 
   # The module opens cluster -> node only on 443/4443/6443/8443/9443/10250. The EKS
   # metrics-server add-on serves on 10251, so without this the aggregated Metrics API
@@ -365,34 +371,60 @@ module "eks" {
 }
 
 # =============================================================================
-# IRSA — External Secrets Operator
+# POD IDENTITIES (EKS Pod Identity, PLATFORM_REVIEW F12)
+# =============================================================================
+# How a pod gets AWS permissions without any stored key:
+#   1. an IAM role trusts the EKS Pod Identity service (one shared trust policy, below);
+#   2. an ASSOCIATION says "pods using ServiceAccount S in namespace N of this cluster get
+#      role R";
+#   3. the Pod Identity agent (an EKS add-on already on every node) hands those pods
+#      short-lived credentials for R. The AWS SDKs pick them up automatically.
+#
+# This replaced IRSA on 2026-10-10. Differences that matter:
+#   - the binding lives HERE, in one list, not as an annotation on a ServiceAccount in another
+#     repo plus a trust policy naming the cluster's OIDC issuer and that ServiceAccount;
+#   - the trust policy no longer contains the cluster's OIDC URL, so a role does not need
+#     editing when a cluster is recreated or a second cluster wants the same role;
+#   - nothing in idp-gitops mentions an IAM role any more.
+# The roles' permission policies are unchanged (sections below).
+
+data "aws_iam_policy_document" "pod_identity_trust" {
+  statement {
+    actions = ["sts:AssumeRole", "sts:TagSession"]
+
+    principals {
+      type        = "Service"
+      identifiers = ["pods.eks.amazonaws.com"]
+    }
+  }
+}
+
+locals {
+  # role -> the one ServiceAccount whose pods may use it
+  pod_identities = {
+    eso            = { namespace = "external-secrets", service_account = "external-secrets", role_arn = aws_iam_role.eso.arn }
+    alb_controller = { namespace = "kube-system", service_account = "aws-load-balancer-controller", role_arn = aws_iam_role.alb_controller.arn }
+    image_updater  = { namespace = "argocd", service_account = "argocd-image-updater-controller", role_arn = aws_iam_role.image_updater.arn }
+    portal         = { namespace = "backstage", service_account = "idp-portal", role_arn = aws_iam_role.portal.arn }
+    kyverno        = { namespace = "kyverno", service_account = "kyverno-admission-controller", role_arn = aws_iam_role.kyverno.arn }
+  }
+}
+
+resource "aws_eks_pod_identity_association" "this" {
+  for_each = local.pod_identities
+
+  cluster_name    = module.eks.cluster_name
+  namespace       = each.value.namespace
+  service_account = each.value.service_account
+  role_arn        = each.value.role_arn
+}
+
+# =============================================================================
+# ROLE — External Secrets Operator
 # =============================================================================
 # ESO needs to call secretsmanager:GetSecretValue and DescribeSecret.
 # Policy is scoped to idp/* secrets only — NOT "*".
 # The trailing -* wildcard covers the random suffix AWS appends to secret names.
-
-data "aws_iam_policy_document" "eso_assume_role" {
-  statement {
-    actions = ["sts:AssumeRoleWithWebIdentity"]
-
-    principals {
-      type        = "Federated"
-      identifiers = [module.eks.oidc_provider_arn]
-    }
-
-    condition {
-      test     = "StringEquals"
-      variable = "${replace(module.eks.cluster_oidc_issuer_url, "https://", "")}:sub"
-      values   = ["system:serviceaccount:external-secrets:external-secrets"]
-    }
-
-    condition {
-      test     = "StringEquals"
-      variable = "${replace(module.eks.cluster_oidc_issuer_url, "https://", "")}:aud"
-      values   = ["sts.amazonaws.com"]
-    }
-  }
-}
 
 data "aws_iam_policy_document" "eso_policy" {
   statement {
@@ -410,7 +442,7 @@ data "aws_iam_policy_document" "eso_policy" {
 
 resource "aws_iam_role" "eso" {
   name               = "idp-eso"
-  assume_role_policy = data.aws_iam_policy_document.eso_assume_role.json
+  assume_role_policy = data.aws_iam_policy_document.pod_identity_trust.json
 
   tags = {
     Name = "idp-eso"
@@ -424,34 +456,11 @@ resource "aws_iam_role_policy" "eso" {
 }
 
 # =============================================================================
-# IRSA — AWS Load Balancer Controller
+# ROLE — AWS Load Balancer Controller
 # =============================================================================
 # ALB Controller manages ALBs for Kubernetes Ingress resources.
 # The IAM policy is the official one from the aws-load-balancer-controller repo.
 # Fetched at apply time so it stays current with new controller releases.
-
-data "aws_iam_policy_document" "alb_controller_assume_role" {
-  statement {
-    actions = ["sts:AssumeRoleWithWebIdentity"]
-
-    principals {
-      type        = "Federated"
-      identifiers = [module.eks.oidc_provider_arn]
-    }
-
-    condition {
-      test     = "StringEquals"
-      variable = "${replace(module.eks.cluster_oidc_issuer_url, "https://", "")}:sub"
-      values   = ["system:serviceaccount:kube-system:aws-load-balancer-controller"]
-    }
-
-    condition {
-      test     = "StringEquals"
-      variable = "${replace(module.eks.cluster_oidc_issuer_url, "https://", "")}:aud"
-      values   = ["sts.amazonaws.com"]
-    }
-  }
-}
 
 # Official ALB controller IAM policy from the upstream repo (v3.5.0 - matches chart 3.5.0 installed by 40-platform).
 # Fetched at terraform apply time — no manual copy-paste needed.
@@ -468,7 +477,7 @@ data "http" "alb_controller_iam_policy" {
 
 resource "aws_iam_role" "alb_controller" {
   name               = "idp-alb-controller"
-  assume_role_policy = data.aws_iam_policy_document.alb_controller_assume_role.json
+  assume_role_policy = data.aws_iam_policy_document.pod_identity_trust.json
 
   tags = {
     Name = "idp-alb-controller"
@@ -482,35 +491,12 @@ resource "aws_iam_role_policy" "alb_controller" {
 }
 
 # =============================================================================
-# IRSA — Argo CD Image Updater
+# ROLE — Argo CD Image Updater
 # =============================================================================
 # Image Updater (installed by Argo CD from idp-gitops/platform/image-updater) lists the tags
 # of golden-path service images to find new builds. Read-only, and only ECR repos under
 # svc/* (the same prefix idp-service-ci may push to). It never pulls for a workload: nodes
 # pull with their own role.
-
-data "aws_iam_policy_document" "image_updater_assume_role" {
-  statement {
-    actions = ["sts:AssumeRoleWithWebIdentity"]
-
-    principals {
-      type        = "Federated"
-      identifiers = [module.eks.oidc_provider_arn]
-    }
-
-    condition {
-      test     = "StringEquals"
-      variable = "${replace(module.eks.cluster_oidc_issuer_url, "https://", "")}:sub"
-      values   = ["system:serviceaccount:argocd:argocd-image-updater-controller"]
-    }
-
-    condition {
-      test     = "StringEquals"
-      variable = "${replace(module.eks.cluster_oidc_issuer_url, "https://", "")}:aud"
-      values   = ["sts.amazonaws.com"]
-    }
-  }
-}
 
 data "aws_iam_policy_document" "image_updater_policy" {
   statement {
@@ -535,9 +521,8 @@ data "aws_iam_policy_document" "image_updater_policy" {
 }
 
 resource "aws_iam_role" "image_updater" {
-  # idp-gitops/platform/image-updater/patch-serviceaccount.yaml refers to this name.
   name               = "idp-image-updater"
-  assume_role_policy = data.aws_iam_policy_document.image_updater_assume_role.json
+  assume_role_policy = data.aws_iam_policy_document.pod_identity_trust.json
 
   tags = {
     Name = "idp-image-updater"
@@ -551,34 +536,11 @@ resource "aws_iam_role_policy" "image_updater" {
 }
 
 # =============================================================================
-# IRSA — Backstage (idp-portal)
+# ROLE — Backstage (idp-portal)
 # =============================================================================
 # The decommission-service template deletes a retired service's images. Backstage gets
 # exactly that: delete ECR repositories under svc/* (the prefix template services use).
 # It cannot touch feature-flag-service or idp-portal images, or anything outside ECR.
-
-data "aws_iam_policy_document" "portal_assume_role" {
-  statement {
-    actions = ["sts:AssumeRoleWithWebIdentity"]
-
-    principals {
-      type        = "Federated"
-      identifiers = [module.eks.oidc_provider_arn]
-    }
-
-    condition {
-      test     = "StringEquals"
-      variable = "${replace(module.eks.cluster_oidc_issuer_url, "https://", "")}:sub"
-      values   = ["system:serviceaccount:backstage:idp-portal"]
-    }
-
-    condition {
-      test     = "StringEquals"
-      variable = "${replace(module.eks.cluster_oidc_issuer_url, "https://", "")}:aud"
-      values   = ["sts.amazonaws.com"]
-    }
-  }
-}
 
 data "aws_iam_policy_document" "portal_policy" {
   statement {
@@ -594,9 +556,8 @@ data "aws_iam_policy_document" "portal_policy" {
 }
 
 resource "aws_iam_role" "portal" {
-  # idp-gitops/apps/idp-portal/base/serviceaccount.yaml refers to this name.
   name               = "idp-portal"
-  assume_role_policy = data.aws_iam_policy_document.portal_assume_role.json
+  assume_role_policy = data.aws_iam_policy_document.pod_identity_trust.json
 
   tags = {
     Name = "idp-portal"
@@ -610,33 +571,10 @@ resource "aws_iam_role_policy" "portal" {
 }
 
 # =============================================================================
-# IRSA — Kyverno admission controller
+# ROLE — Kyverno admission controller
 # =============================================================================
 # The policy verify-image-provenance (idp-gitops/platform/kyverno) reads an image's signed
 # build provenance from ECR before a pod is admitted. Read-only, repositories under svc/* only.
-
-data "aws_iam_policy_document" "kyverno_assume_role" {
-  statement {
-    actions = ["sts:AssumeRoleWithWebIdentity"]
-
-    principals {
-      type        = "Federated"
-      identifiers = [module.eks.oidc_provider_arn]
-    }
-
-    condition {
-      test     = "StringEquals"
-      variable = "${replace(module.eks.cluster_oidc_issuer_url, "https://", "")}:sub"
-      values   = ["system:serviceaccount:kyverno:kyverno-admission-controller"]
-    }
-
-    condition {
-      test     = "StringEquals"
-      variable = "${replace(module.eks.cluster_oidc_issuer_url, "https://", "")}:aud"
-      values   = ["sts.amazonaws.com"]
-    }
-  }
-}
 
 data "aws_iam_policy_document" "kyverno_policy" {
   statement {
@@ -661,9 +599,8 @@ data "aws_iam_policy_document" "kyverno_policy" {
 }
 
 resource "aws_iam_role" "kyverno" {
-  # idp-gitops/platform/argocd-apps/kyverno.yaml refers to this name.
   name               = "idp-kyverno"
-  assume_role_policy = data.aws_iam_policy_document.kyverno_assume_role.json
+  assume_role_policy = data.aws_iam_policy_document.pod_identity_trust.json
 
   tags = {
     Name = "idp-kyverno"
