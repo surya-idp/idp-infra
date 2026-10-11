@@ -186,11 +186,26 @@ resource "helm_release" "argocd" {
         # App-of-apps: Argo CD 1.8+ no longer reports health for Application resources,
         # so the root app would not wait for wave 0 (platform-cluster) before wave 1
         # (feature-flag-dev). This is the upstream-documented health check that restores it.
+        #
+        # Two additions to the upstream snippet (2026-10-11). An Application that has just been
+        # created reports "Healthy" before it has synced anything: it has no resources, so
+        # nothing is unhealthy. The root app then moved on to the next wave while External
+        # Secrets was still installing, and the database operator's ExternalSecret was
+        # rejected by a webhook that did not exist yet. So an Application counts as healthy
+        # only after its first sync has finished, and never while a sync is running.
         resource.customizations.health.argoproj.io_Application: |
           hs = {}
           hs.status = "Progressing"
           hs.message = ""
           if obj.status ~= nil then
+            if obj.status.operationState == nil then
+              hs.message = "Waiting for the first sync"
+              return hs
+            end
+            if obj.status.operationState.phase == "Running" then
+              hs.message = "Sync in progress"
+              return hs
+            end
             if obj.status.health ~= nil then
               hs.status = obj.status.health.status
               if obj.status.health.message ~= nil then
