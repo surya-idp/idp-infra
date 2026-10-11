@@ -6,6 +6,7 @@
 #   2. DynamoDB table for state locking (optional but good portfolio practice)
 #   3. GitHub OIDC Identity Provider (enables keyless CI auth)
 #   4. IAM role idp-github-ci (assumed by GitHub Actions via OIDC)
+#   5. S3 bucket for documentation sites (Backstage TechDocs), written by service CI
 #
 # STATE: LOCAL — intentional chicken-and-egg.
 #   This layer creates the S3 bucket that all other layers use as their backend.
@@ -310,6 +311,82 @@ resource "aws_iam_role_policy" "service_ci_ecr" {
   name   = "ecr-svc-only"
   role   = aws_iam_role.service_ci.id
   policy = data.aws_iam_policy_document.service_ci_ecr.json
+}
+
+# ─── S3 bucket: documentation sites (Backstage TechDocs) ───────────────────
+# Each service's CI builds its docs/ folder into a small website and uploads it here; Backstage
+# only reads it. This is the setup the Backstage project recommends for production, and the
+# only one that works here: Backstage's own builder needs Docker, which a pod does not have.
+#
+# WHY IN THIS LAYER (permanent, never destroyed): docs are written at push time, not at
+# `make up` time. A bucket that was deleted with the cluster would be empty after every
+# `make up` until each service was pushed again.
+#
+# COST: storage only. A site is a few hundred KB of HTML: a fraction of a cent per month.
+resource "aws_s3_bucket" "techdocs" {
+  bucket = "idp-techdocs-${data.aws_caller_identity.current.account_id}"
+
+  tags = {
+    Name = "idp-techdocs"
+  }
+}
+
+resource "aws_s3_bucket_server_side_encryption_configuration" "techdocs" {
+  bucket = aws_s3_bucket.techdocs.id
+
+  rule {
+    apply_server_side_encryption_by_default {
+      sse_algorithm = "AES256"
+    }
+  }
+}
+
+# Never public: Backstage reads it with its IAM role and serves the pages to signed-in users.
+resource "aws_s3_bucket_public_access_block" "techdocs" {
+  bucket = aws_s3_bucket.techdocs.id
+
+  block_public_acls       = true
+  block_public_policy     = true
+  ignore_public_acls      = true
+  restrict_public_buckets = true
+}
+
+resource "aws_s3_bucket_ownership_controls" "techdocs" {
+  bucket = aws_s3_bucket.techdocs.id
+
+  rule {
+    object_ownership = "BucketOwnerEnforced"
+  }
+}
+
+# Service CI (the shared workflow's `docs` job) uploads a site under
+# default/component/<service>/. One role serves every service repo, so a service could
+# overwrite another service's docs. Accepted: it is documentation, the role still cannot read
+# or write anything else, and every upload is a CI run with an author.
+data "aws_iam_policy_document" "service_ci_techdocs" {
+  statement {
+    sid       = "ListDocs"
+    effect    = "Allow"
+    actions   = ["s3:ListBucket"]
+    resources = [aws_s3_bucket.techdocs.arn]
+  }
+
+  statement {
+    sid    = "WriteComponentDocs"
+    effect = "Allow"
+    actions = [
+      "s3:PutObject",
+      "s3:GetObject",
+      "s3:DeleteObject", # publishing removes pages that no longer exist
+    ]
+    resources = ["${aws_s3_bucket.techdocs.arn}/default/component/*"]
+  }
+}
+
+resource "aws_iam_role_policy" "service_ci_techdocs" {
+  name   = "techdocs-publish"
+  role   = aws_iam_role.service_ci.id
+  policy = data.aws_iam_policy_document.service_ci_techdocs.json
 }
 
 # ─── IAM role: idp-infra-plan (PLATFORM_REVIEW F7) ─────────────────────────
