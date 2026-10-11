@@ -7,6 +7,10 @@
 > Method: every "Ours" cell was checked in the repos or AWS on 2026-09-27 (not from memory); every
 > "Industry" cell cites a vendor or project source (section 6). The user's rule: **where we differ
 > from industry without a real reason, follow industry.**
+>
+> **Final state, 2026-10-11:** all sixteen flaws are closed or closed with a stated remainder.
+> Sections 1 to 3 are the review as written on 2026-09-27 and are kept unchanged as the
+> "before". The "after" is section 5a (flaw by flaw) and section 4 (the deviations that stay).
 
 ---
 
@@ -187,15 +191,27 @@ Severity = impact x likelihood for *this* platform. Effort: S (< 1h), M (half da
 
 ## 4. Deviations we keep, and their production equivalent
 
+Final list, 2026-10-11. Each is a choice with a reason, not an oversight.
+
 | Deviation | Why | Production equivalent (say this in interviews) |
 |---|---|---|
-| Destroy every session (Option B) | ~$0.26/hr, $0 idle | long-lived envs; ephemeral preview envs per PR |
-| One account, one env | credits | account per env under Organizations/Control Tower [5] |
-| No domain/TLS | cost | ACM + Route 53, HTTPS-only listeners |
-| Port-forward to Backstage/Argo | only-me access, no domain | SSO behind an internal ALB/VPN |
-| Single-AZ RDS, no backups | cost; data is disposable | Multi-AZ + PITR, restore drills |
-| 2x t4g.small, no Karpenter | cost | Karpenter / Auto Mode, Spot + On-Demand mix |
-| Laptop secrets pushed each session | $0 idle | permanent secrets with rotation |
+| Destroy every session (Option B) | ~$0.33/hr while up, cents idle | long-lived envs; ephemeral preview envs per PR |
+| One account, one env; staging and prod overlays exist but nothing deploys them | cost; separate data and a domain would be needed | account per env under Organizations/Control Tower [5]; promotion between them (Kargo or pull requests) |
+| No domain, so plain HTTP on the load balancer | a certificate needs a domain name, and a domain costs money | ACM + Route 53, HTTPS-only listeners, one hostname per service |
+| Port-forward to Backstage, Argo CD, Grafana, Prometheus | no domain; one user; "who has cluster access" is the access control | internal URLs with SSO behind an internal ALB or VPN |
+| No Argo CD or Grafana plugin in Backstage | follows from the row above: Grafana has no address a browser can reach, and Argo CD's plugin would need one more stored credential to show what the Kubernetes tab shows | both plugins, with SSO |
+| Single-AZ RDS, no backups, one shared instance with a database per service | cost; data is disposable | Multi-AZ + PITR, restore drills; instance or cluster per domain |
+| 3x t4g.medium, fixed size, no Karpenter | cost; the platform fits | Karpenter / Auto Mode, Spot + On-Demand mix |
+| One NAT gateway | cost | one per AZ, or VPC endpoints |
+| EKS API endpoint public, restricted to one address | no VPN in a solo lab | private endpoint + VPN or bastion |
+| Laptop secrets (two GitHub App keys) pushed each session | a permanent secret would cost money while idle | permanent secrets with rotation |
+| Alerts are delivered to a receiver in the cluster that logs them | no chat or pager token to store; the delivery path is the real one | Slack / PagerDuty receivers, on-call routing |
+| The provenance policy reports, it does not block | the two platform-owned images are not built by the attesting workflow | enforce for every image, platform images included |
+| NetworkPolicy controls incoming connections only | outbound rules for every service are a project of their own | egress policies or a service mesh with mTLS |
+| One CI role (`idp-service-ci`) for all template service repos | a role per repository would have to be created by the template with IAM rights | role per repository, or session tags from the OIDC claims |
+| Argo CD polls Git every 60 s | GitHub cannot call a cluster without a public address | a webhook |
+| Archive, not delete, a decommissioned repository (delete is an explicit option) | deleting cannot be undone | the same |
+| `00-bootstrap` has local Terraform state and is applied by hand | it creates the bucket that would hold its state | the same, or a separate bootstrap account |
 
 ---
 
@@ -228,7 +244,44 @@ Each item ends with command output as evidence, per the HANDOVER convention.
 
 ---
 
-## 5a. Progress (2026-10-10, cluster down, $0)
+## 5a. Progress and final state (2026-10-11, cluster down)
+
+### Final state of every flaw
+
+| ID | Flaw (2026-09-27) | State 2026-10-11 | Where / evidence |
+|---|---|---|---|
+| F1 | Long-lived admin access key | **Closed.** IAM Identity Center; the key was deleted on 2026-10-10: no permanent AWS credential exists | `aws sts get-caller-identity` shows the SSO role. Side effect found later: HANDOVER Finding 91 (credits) |
+| F2 | Deploy repo unprotected | **Closed.** Ruleset with the required `validate` check; only `idp-ci-bot` bypasses; Backstage merges through auto-merge | idp-gitops ruleset; a direct push is rejected |
+| F3 | Apps use the RDS master user | **Closed.** `ext-postgres-operator`: every app declares a database and a login; the master password is read in one namespace | idp-gitops#16; `make e2e` sections 3 and 4 |
+| F4 | Everything in the `default` AppProject | **Closed.** Projects `platform` and `apps`; `default` locked | idp-gitops#4 |
+| F5 | No pod security, no policy engine | **Closed.** Pod Security labels; Kyverno with eight policies (the resource policy replaced the planned LimitRange) | idp-gitops#17; `make e2e` section 5 |
+| F6 | Provider lock files not committed | **Closed** | idp-infra 31d7d6a |
+| F7 | No Terraform CI | **Closed with a remainder.** fmt, validate, tflint, Trivy, plan and drift check for the permanent layers. Remainder by design: bootstrap state is local; session layers cannot be planned between sessions | idp-infra#10 |
+| F8 | Unused PAT; bot key copied into repos | **Closed.** PAT secret deleted; the bot key exists only in the cluster (and `~/.idp`); the `FF_IDP_CI_BOT_*` secrets were deleted from both app repos | idp-gitops#32, feature-flag-service#3, idp-portal#34 |
+| F9 | Terraform installs ESO and the ALB controller | **Closed.** Terraform installs Argo CD only; Argo CD installs them in waves -2 and -1 | idp-infra#22, idp-gitops#19 |
+| F10 | Old ESO, old API version | **Closed** for ESO (2.11.0, `v1`). Remainder: AWS provider 5.x and EKS module 20.x were not upgraded | idp-infra#9, idp-gitops#5 |
+| F11 | Tags not SHAs; no SBOM or signing; no scanning | **Closed.** SHA pins, Dependabot, CodeQL, secret scanning; signed build provenance and SBOM for every template service image, checked at admission (audit). Remainder: the two platform images are not attested | idp-platform#2, idp-gitops#17, #24 |
+| F12 | IRSA; implicit auth mode | **Closed.** EKS Pod Identity for every controller; `authentication_mode = "API"` | idp-infra#22; `make e2e` section 2 |
+| F13 | No NetworkPolicy; cache unencrypted | **Closed.** NetworkPolicy for every service, the flag API, Backstage and the monitoring data stores; TLS to Valkey. Remainder by choice: outbound traffic is open | idp-gitops#20, #34; idp-infra#23 |
+| F14 | No observability | **Closed.** Metrics, dashboards, five alerts with unit tests, logs, traces; metrics and tracing in the service skeleton | idp-gitops#18, #22, #25; idp-portal#32 |
+| F15 | Backstage: guest, no permissions, static catalog | **Closed.** GitHub discovery, no guest, a permission policy. Remainder: the refusal of a non-admin was never exercised with a second real user | idp-portal#37 |
+| F16 | Personal GitHub account | **Closed.** Organisation `surya-idp` | 2026-09-27 |
+
+What the review could not see in September and the two cluster sessions found: HANDOVER
+Findings 62 to 93. The ones worth remembering as *review-level* lessons:
+
+- **A fix can have a side effect in another area.** F1 (single sign-on) created an AWS
+  Organization, which ended the Free Tier credits (Finding 91).
+- **"Newest build wins" needs the builds to be ordered.** Moving delivery to Image Updater
+  (F8) removed a credential and introduced a race that took two attempts to close (Findings
+  79 and 86).
+- **A health check that is true too early is worse than none.** A new Argo CD Application
+  is "Healthy" before it has installed anything (Finding 80).
+- **Rules need a test that makes them fire.** One alert could never fire in the case it was
+  written for, and one admission policy rejected every valid image (Findings 74 and 75).
+
+### Progress log (as written during the work)
+
 
 | ID | Status | Evidence / where |
 |---|---|---|
@@ -247,7 +300,7 @@ Each item ends with command output as evidence, per the HANDOVER convention.
 | F2 | Tightened 2026-10-10: the Backstage App is off the idp-gitops bypass list (only `idp-ci-bot` bypasses); "Allow auto-merge" on; the CRD schema catalog used by `validate` is pinned by commit | deploy PR of a template service merged by the App only after `validate` passed |
 | F8 | Partly: golden-path service repos hold no deploy-repo credential (Image Updater holds the only copy, in the cluster). feature-flag-service and idp-portal still carry the CI bot key | bot commit `chore(deploy): update hello-svc image` authored by `idp-ci-bot[bot]`, Verified |
 | Templates phases 1-4 | **Done 2026-10-10** (TEMPLATES_RESEARCH section 13): zero-click first deploy, Image Updater, shared CI repo `idp-platform`, Kustomize components, skeleton v2, template CI | form -> ALB 200 in 2m46s; second push live in 6m35s |
-| F3, F9, F12, F14, F15 | Not started (need a cluster session) | - |
+| F3, F9, F12, F13, F14, F15, F8 (rest) | **Done 2026-10-10 / 2026-10-11** (packages 1 to 8), verified in cluster sessions A and B on 2026-10-11 | the table above; HANDOVER section 0a |
 
 Also found: idp-portal has 14 Dependabot alerts (2 high) in dependencies; the image Trivy gate passes,
 so they are in build-time/dev dependencies or have no fixed version yet. Review the security PRs.

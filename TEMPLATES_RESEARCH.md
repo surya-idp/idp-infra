@@ -8,6 +8,10 @@
 > **Updated 2026-09-27 (Session 8): section 11 re-checks every claim and decision against sourced
 > evidence (versions, consensus vs opinion vs vendor, criticisms, real companies) and changes three
 > details of the plan (11.6). Section 12 is the interview explainer. New sources are [15]-[52].**
+>
+> **Updated 2026-10-11: section 14 is the final state.** Phases 5 and 6 are built and verified:
+> signed provenance and SBOM, three day-2 templates, the annotation contract that keeps them
+> generic. Sections 1 to 13 are kept as written.
 
 ---
 
@@ -743,4 +747,93 @@ two-week-old dependency set (60); an all-digit image tag is parsed as a number (
 2. Move feature-flag-service and idp-portal to Image Updater (section 8 note; removes the CI bot key from two repos).
 3. Phase 5: SBOM, keyless signing, provenance with `--signer-workflow` pointing at idp-platform.
 4. Phase 6: T4 decommission-service first (the session's clean-up was manual in four places), then T2, then T3 after F3.
+
+---
+
+## 14. Final state: phases 5 and 6, and what two cluster sessions changed (2026-10-11)
+
+### 14.1 The template catalog, against section 6
+
+| Planned | Built | Verified on the cluster |
+|---|---|---|
+| T1 `python-service` v2 | Yes, and extended since section 13: request metrics and tracing, a feature flag helper, documentation published by CI, signed provenance and SBOM, an optional database | 2026-10-10 and 2026-10-11. Form to running pods: 2 min 36 s with a database (was 5 min 31 s for v1 with a manual merge) |
+| T2 `add-feature-flag` | Yes | 2026-10-11: flag created, audited, evaluated by the service with its own identity |
+| T3 `add-postgres-database` | Yes | 2026-10-11: database and login within 90 s of the merge, pods restarted with `DATABASE_URL`, the route answered 200 afterwards |
+| T4 `decommission-service` | Yes | 2026-10-11, three runs. The last left nothing behind anywhere |
+| T5 `promote` | No | Out of scope: there is one environment |
+
+### 14.2 The decision that shaped phase 6: day-2 templates are generic
+
+The owner's objection to a first draft, 2026-10-10: a removal template written for one creation
+template means every new creation template doubles the number of templates. The design that
+answers it:
+
+- A creation template **records** what it created, as annotations in the service's catalog
+  entry: `idp.surya-idp/template-version` (the marker of a golden-path service),
+  `github.com/project-slug`, `idp.surya-idp/gitops-path`, `idp.surya-idp/ecr-repository`.
+- A day-2 template **reads** those annotations. It lists services by the marker, not by a
+  template's name, and every step that depends on an annotation is conditional on it.
+- A new kind of resource should live **inside the service's deploy folder** as an opt-in
+  component, so removing the folder removes it and the controller behind it cleans up. The
+  database works this way. Only what lives outside the folder (the image repository, the flags,
+  the docs) needs a step of its own.
+
+Evidence that it holds: template CI dry-runs `decommission-service` against a stand-in service
+"from another template" that deploys nothing and builds no image; the steps without an
+annotation are skipped. The contract is `idp-portal/templates/README.md`.
+
+On the question whether real companies remove services with a template: Backstage has no
+built-in service lifecycle or rollback (backstage/backstage#28818, closed as not planned); an
+`unregister` action exists; there is no public description of how Spotify does it. Deleting
+declaratively (remove the folder, let controllers clean up) is the production pattern, and the
+template is a front end to exactly that plus the three things that live elsewhere.
+
+### 14.3 Phase 5: supply chain
+
+| Piece | What |
+|---|---|
+| Where it is signed | In the **shared** workflow (`idp-platform`), with `actions/attest`: build provenance and a CycloneDX SBOM per pushed image, stored next to the image in ECR |
+| Why there | The signer identity is the workflow file. A service cannot produce a valid attestation with a pipeline of its own |
+| How it is checked by a person | `gh attestation verify oci://<image>@<digest> --owner surya-idp --signer-workflow surya-idp/idp-platform/.github/workflows/python-service.yml` |
+| How it is checked by the cluster | Kyverno `ImageValidatingPolicy` `verify-image-provenance`, audit mode |
+| What went wrong | The certificate names the workflow by the caller's ref. Services pin by commit, so the policy must list release commits, not tags (HANDOVER Finding 74). Each release needs its commit added |
+
+### 14.4 Phase 6 details that are easy to get wrong
+
+| Topic | Decision | Reason |
+|---|---|---|
+| Who may decommission | Group `platform-admins`. The template's first step is an admin-only no-op | The scaffolder checks an action when its step starts. Without the guard a refused user would be stopped halfway through a removal |
+| Order inside a removal | Deploy files first (a pull request, merged when `validate` is green), then images, flags, docs, repository, catalog entry | Nothing is left running that points at something already gone |
+| Order inside the cluster | Sync waves: namespace -3, database -2, login -1, the rest 0 or later; Argo CD deletes in reverse | The operator drops a login only while its database exists and is not being deleted (Finding 78) |
+| Archive or delete the repository | Archive by default; delete is a box on the form | Deleting cannot be undone. But an archived repository keeps its name taken (Finding 90) |
+| How a service authenticates to the flag API | Its Kubernetes ServiceAccount token, issued for the audience `feature-flag-api`, verified with TokenReview | No secret to create, deliver or rotate. Alternatives rejected: API keys (credential sprawl), sharing the signing key (every holder can mint an admin token) |
+| Flag names | Stored as `<service>.<flag>`; the helper adds the prefix | Two services can both have `new-checkout`; a removed service's flags can be found |
+| A catalog entry per flag | No | Flags change often and are switched without a deploy; the flag API is their source of truth and keeps the audit trail |
+| The helper's failure mode | Never raises, 0.5 s timeout, 10 s cache of real answers only, returns the caller's default | A flag service outage must not break its callers (Finding 85 was a bug in exactly this) |
+
+### 14.5 What the two sessions changed in the path itself
+
+Section 13.6 listed four follow-ups. All are done:
+
+1. Polling: Argo CD every 60 s, and the ApplicationSet's own timer 60 s (it was the larger
+   part: Finding 81). A webhook is not possible without a public address.
+2. The two platform apps use Image Updater; no application repository holds a deploy credential.
+3. Phase 5, above.
+4. Phase 6, above.
+
+And three things nobody had planned:
+
+- **Build ordering.** "Newest build wins" deployed the older of two quick pushes. The shared
+  workflow (v2.1.1) pushes an image only for the branch's newest commit (Findings 79, 86).
+- **What counts as CI.** GitHub's own runs for a commit (Dependabot, code scanning) are not the
+  service's CI (Finding 82).
+- **User input in a picker.** The Name field's autocomplete put an existing repository's name
+  back into the form (Finding 90).
+
+### 14.6 Not verified
+
+- The "delete the repository" option, for real.
+- A non-admin being refused at the guard step, with a second real user.
+- A creation template in another language. The claim "day-2 templates need no change" is
+  supported by a dry run against a stand-in, not by a second real template.
 
