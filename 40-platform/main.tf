@@ -193,8 +193,18 @@ resource "helm_release" "argocd" {
           end
           return hs
 
+    controller:
+      # The application controller holds every resource of every app in memory. With the whole
+      # platform under Argo CD it used about 650Mi and had no request at all, so the scheduler
+      # placed it as if it were free and its node ran out of memory (2026-10-11).
+      resources:
+        requests:
+          cpu: 100m
+          memory: 768Mi
+        limits:
+          memory: 1536Mi
+
     server:
-      # Resource requests sized for t4g.small (2vCPU/2GiB per node, shared with system pods)
       resources:
         requests:
           cpu: 50m

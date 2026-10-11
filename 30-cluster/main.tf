@@ -331,7 +331,12 @@ module "eks" {
     spot = {
       # Account restricts Spot to free-tier-eligible types only.
       # t4g.small = 2 vCPU / 2 GiB — Graviton, free-tier eligible, enough for EKS system pods.
-      instance_types = ["t4g.small"]
+      # t4g.medium (4 GiB) since 2026-10-11. With Argo CD installing the whole platform, three
+      # t4g.small (2 GiB, about 1.4 GiB usable each) were not enough: on the first start a node
+      # ran out of memory and stopped responding. A small node also loses a large share to the
+      # per-node daemons (CNI, kube-proxy, node exporter, pod identity agent). Twice the memory
+      # per node costs $0.0168/hr more per node.
+      instance_types = ["t4g.medium"]
       capacity_type  = "ON_DEMAND"
       ami_type       = "AL2023_ARM_64_STANDARD"
 
@@ -351,9 +356,7 @@ module "eks" {
       }]
 
       # Three nodes since the observability stack (Prometheus, Grafana, Loki, Tempo: about
-      # 1.2 GiB of requests) joined Kyverno, the database operator and Image Updater. Two
-      # 2 GiB nodes were at 52-57% memory with the platform before any of those.
-      # One more t4g.small is about $0.017/hr.
+      # 1 GiB of requests) joined Kyverno, the database operator and Image Updater.
       min_size     = 2
       max_size     = 4
       desired_size = 3
