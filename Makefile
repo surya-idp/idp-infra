@@ -59,9 +59,16 @@ up:
 	terraform -chdir=40-platform init -input=false
 	terraform -chdir=40-platform apply -auto-approve
 	@echo ""
-	@echo "==> Waiting for Argo CD root app to be Healthy..."
-	kubectl wait --for=jsonpath='{.status.health.status}'=Healthy application/root \
-	  -n argocd --timeout=900s || echo "WARN: root app not Healthy yet - check: kubectl get applications -n argocd"
+	@echo "==> Waiting for Argo CD to install the platform (root app: first sync finished, then Healthy)..."
+	@# "Healthy" alone is not enough: an Application that has not synced anything yet has no
+	@# unhealthy resource and reports Healthy at once. On 2026-10-11 this step passed 3 minutes
+	@# into a run while Argo CD was still on its first wave. The root app's sync only succeeds
+	@# after every wave below it is healthy, so that is what is waited for first.
+	@kubectl wait --for=jsonpath='{.status.operationState.phase}'=Succeeded application/root \
+	  -n argocd --timeout=900s \
+	&& kubectl wait --for=jsonpath='{.status.health.status}'=Healthy application/root \
+	  -n argocd --timeout=300s \
+	|| { echo "ERROR: the platform is not ready. Look at: kubectl get applications -n argocd"; exit 1; }
 	@echo ""
 	@echo "╔══════════════════════════════════════════════╗"
 	@echo "║         Environment ready!                   ║"

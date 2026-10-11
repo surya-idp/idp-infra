@@ -98,13 +98,16 @@ up=$(curl -s --max-time 10 'http://localhost:19090/api/v1/query' --data-urlencod
 import sys,json
 r=json.load(sys.stdin)['data']['result']
 print(sum(1 for x in r if x['value'][1]=='1'), len(r))" 2>/dev/null)
+# Only alerts that mean something is wrong. Watchdog (always on, proves the alert path) and
+# InfoInhibitor (on whenever an info-level alert is, e.g. CPU throttling during start-up) have
+# severity "none" by design.
 firing=$(curl -s --max-time 10 'http://localhost:19090/api/v1/alerts' | python3 -c "
 import sys,json
-print(' '.join(sorted({a['labels']['alertname'] for a in json.load(sys.stdin)['data']['alerts'] if a['state']=='firing' and a['labels']['alertname']!='Watchdog'})))" 2>/dev/null)
+print(' '.join(sorted({a['labels']['alertname'] for a in json.load(sys.stdin)['data']['alerts'] if a['state']=='firing' and a['labels'].get('severity') in ('warning','critical')})))" 2>/dev/null)
 kill $pf 2>/dev/null
 set -- $up
 [ "${1:-0}" -ge 1 ] && [ "${1:-0}" = "${2:-x}" ] && ok "Prometheus scrapes $1 service pod(s), all up" || bad "service scrape targets up/total: ${1:-0}/${2:-0}"
-[ -z "$firing" ] && ok "no alert firing (besides Watchdog)" || bad "alerts firing: $firing"
+[ -z "$firing" ] && ok "no warning or critical alert firing" || bad "alerts firing: $firing"
 r=$(kubectl -n monitoring get statefulset alertmanager-kps-alertmanager -o jsonpath='{.status.readyReplicas}' 2>/dev/null)
 [ "${r:-0}" -ge 1 ] && ok "alertmanager Ready" || bad "alertmanager not Ready"
 for d in kps-grafana alert-receiver alloy; do
