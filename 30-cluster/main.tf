@@ -246,7 +246,7 @@ resource "aws_secretsmanager_secret_version" "valkey" {
 
 module "eks" {
   source  = "terraform-aws-modules/eks/aws"
-  version = "~> 20.0"
+  version = "~> 21.29"
 
   # v20 argument names (v21 renamed them — we use v20 to avoid a planning-phase bug
   # in v21 where count in the node group submodule references partition before it's known)
