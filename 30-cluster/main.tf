@@ -581,6 +581,14 @@ data "aws_iam_policy_document" "portal_policy" {
     actions   = ["s3:GetObject"]
     resources = ["arn:aws:s3:::idp-techdocs-${data.aws_caller_identity.current.account_id}/*"]
   }
+
+  # Decommission: a removed service's documentation site is deleted with it. Only the prefix
+  # where component docs live; Backstage cannot delete anything else in the bucket.
+  statement {
+    sid       = "DeleteComponentDocs"
+    actions   = ["s3:DeleteObject"]
+    resources = ["arn:aws:s3:::idp-techdocs-${data.aws_caller_identity.current.account_id}/default/component/*"]
+  }
 }
 
 resource "aws_iam_role" "portal" {
