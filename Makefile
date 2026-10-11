@@ -2,7 +2,7 @@ PROFILE  := idp
 ACCOUNT  := 693906847772
 REGION   := ap-south-1
 
-.PHONY: up down verify-empty
+.PHONY: up down e2e verify-empty
 
 # =============================================================================
 # LIFECYCLE STRATEGY — Option B (destroy-every-session)
@@ -86,5 +86,9 @@ down:
 # Checks ALL tagged idp resources still running.
 # VPC/subnets/SGs are free and will show up — that is normal and expected.
 # The check filters to only BILLABLE resource types.
+# End-to-end test of the running platform (read-only). Exit code 0 = everything works.
+e2e:
+	@tests/e2e.sh
+
 verify-empty:
 	@python3 scripts/verify-empty.py
