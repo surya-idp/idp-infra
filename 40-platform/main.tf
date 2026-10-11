@@ -204,13 +204,17 @@ resource "helm_release" "argocd" {
           memory: 256Mi
 
     repoServer:
+      # The repo server renders every Helm chart Argo CD installs. Since Argo CD owns the whole
+      # platform (kube-prometheus-stack, Kyverno, Loki ...), 256Mi was not enough: it was
+      # OOM-killed twice during the first sync (2026-10-11) and every app showed
+      # "connection refused" until it came back.
       resources:
         requests:
           cpu: 50m
-          memory: 64Mi
+          memory: 128Mi
         limits:
-          cpu: 500m
-          memory: 256Mi
+          cpu: "1"
+          memory: 1Gi
 
     applicationSet:
       resources:
