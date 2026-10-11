@@ -27,3 +27,8 @@ output "service_ci_role_arn" {
   description = "ARN of the IAM role for template-created services (svc/* ECR only)"
   value       = aws_iam_role.service_ci.arn
 }
+
+output "techdocs_bucket_name" {
+  description = "S3 bucket holding the documentation sites that Backstage TechDocs serves"
+  value       = aws_s3_bucket.techdocs.id
+}

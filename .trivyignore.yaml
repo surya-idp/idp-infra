@@ -3,7 +3,7 @@
 misconfigurations:
   - id: AWS-0132
     paths: ["00-bootstrap/main.tf"]
-    statement: "State bucket uses SSE-S3 (AES256). A customer-managed KMS key costs $1/month for no gain in a single-account lab. Production: SSE-KMS with a CMK."
+    statement: "State bucket and docs bucket use SSE-S3 (AES256). A customer-managed KMS key costs $1/month for no gain in a single-account lab. Production: SSE-KMS with a CMK."
   - id: AWS-0104
     paths: ["modules/vpc/main.tf", "terraform-aws-modules/eks/aws/node_groups.tf"]
     statement: "Security groups allow egress to 0.0.0.0/0: nodes pull images and reach AWS APIs through the NAT gateway. Production: VPC endpoints + egress restrictions/NetworkPolicy (PLATFORM_REVIEW F13)."

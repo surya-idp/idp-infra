@@ -567,6 +567,20 @@ data "aws_iam_policy_document" "portal_policy" {
       "arn:aws:ecr:ap-south-1:${data.aws_caller_identity.current.account_id}:repository/svc/*",
     ]
   }
+
+  # TechDocs: Backstage reads the documentation sites that service CI uploaded to the docs
+  # bucket (00-bootstrap). Read-only.
+  statement {
+    sid       = "ListDocs"
+    actions   = ["s3:ListBucket"]
+    resources = ["arn:aws:s3:::idp-techdocs-${data.aws_caller_identity.current.account_id}"]
+  }
+
+  statement {
+    sid       = "ReadDocs"
+    actions   = ["s3:GetObject"]
+    resources = ["arn:aws:s3:::idp-techdocs-${data.aws_caller_identity.current.account_id}/*"]
+  }
 }
 
 resource "aws_iam_role" "portal" {
