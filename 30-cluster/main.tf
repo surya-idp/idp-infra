@@ -526,6 +526,10 @@ data "aws_iam_policy_document" "image_updater_policy" {
     ]
     resources = [
       "arn:aws:ecr:ap-south-1:${data.aws_caller_identity.current.account_id}:repository/svc/*",
+      # The platform's own two apps are deployed by Image Updater too (idp-gitops
+      # platform/image-updater, ImageUpdater `platform-apps`).
+      "arn:aws:ecr:ap-south-1:${data.aws_caller_identity.current.account_id}:repository/feature-flag-service",
+      "arn:aws:ecr:ap-south-1:${data.aws_caller_identity.current.account_id}:repository/idp-portal",
     ]
   }
 }

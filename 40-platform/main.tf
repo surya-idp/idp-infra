@@ -176,6 +176,13 @@ resource "helm_release" "argocd" {
       # Allow Argo CD to manage resources in all namespaces (needed for app-of-apps).
       # Without this, Argo CD can only sync into its own namespace.
       cm:
+        # How often Argo CD looks at Git for new commits. The default is 3 minutes (plus
+        # jitter), and a push took up to 6 minutes of waiting before it deployed (2026-10-11).
+        # GitHub cannot call a webhook here (the cluster has no public URL), so polling
+        # faster is the only lever. One small repo, a handful of apps: 60s costs nothing.
+        timeout.reconciliation: 60s
+        timeout.reconciliation.jitter: 10s
+
         # App-of-apps: Argo CD 1.8+ no longer reports health for Application resources,
         # so the root app would not wait for wave 0 (platform-cluster) before wave 1
         # (feature-flag-dev). This is the upstream-documented health check that restores it.
