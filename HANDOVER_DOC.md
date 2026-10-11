@@ -31,58 +31,83 @@ scans both `Project=idp` and `Project=ff-idp` tags.
 
 ---
 
-## 0a. Current State at a Glance (2026-10-10, end of Session 9)
+## 0a. Current State at a Glance (2026-10-11, cluster work finished)
 
-**AWS right now:** everything destroyed except the free permanent layers (00-bootstrap,
-10-network, 15-registry). `make verify-empty` passes: $0.00. RDS is the only database.
+**AWS right now:** everything destroyed except the permanent layers (00-bootstrap, 10-network,
+15-registry). `make verify-empty` passes. Nothing runs; the idle cost is a few cents a month
+(image storage, state bucket, an empty docs bucket).
 
-| Step | Status |
+**Money: read this before starting anything in AWS.** The credits this project was planned on
+are gone. Billing > Credits lists every credit as `Expired` with status date **2026-09-27** and
+$0.00 active; Cost Explorer shows October usage with no credit applied. The likely cause, not
+confirmed by AWS: IAM Identity Center was set up on 2026-09-27, which creates an AWS
+Organization, and that ends the Free Tier plan and its credits. Every cluster hour (~$0.33) is
+billed to the card. Owner's decision of 2026-10-11: no change that costs money, and no further
+cluster session without an explicit yes. A billing support case asking for the credits to be
+reinstated is free to open (Finding 91).
+
+| Step / package | Status |
 |---|---|
 | 1-22 (app, kind platform, Terraform bootstrap, network, data, CI rewrite) | Done |
-| 23 EKS, 24 ESO, 25 ALB ingress | Done and verified |
-| 26 Argo CD app-of-apps via Terraform, 27 Kustomize overlays | Done and verified 2026-09-26 |
-| 28 HPA + PDB + zero-downtime rollouts (0 failed requests under load) | Done and verified 2026-09-26 |
-| 29 Backstage in the cluster (image via CI, RDS, GitHub App) | Done and verified 2026-09-27 |
-| 30 Software template `python-service` | **v2 done and verified 2026-10-10**: form -> live service in 2m46s with zero clicks; a later push deploys itself in ~6.5 min (TEMPLATES_RESEARCH section 13) |
-| Guardrails F4/F5 (AppProjects, Pod Security labels), F10 (ESO 2.11.0, `v1` API) | Merged and verified on the cluster 2026-10-10 |
-| 31 plugins, 33 Kyverno suite, 34 observability, 35 DR drill, 36 e2e rewrite | Not started |
+| 23 EKS, 24 ESO, 25 ALB ingress, 26 Argo CD app-of-apps, 27 Kustomize overlays, 28 zero-downtime rollouts | Done and verified 2026-09-26 |
+| 29 Backstage in the cluster, 30 template `python-service` v2 (form -> live with zero clicks) | Done and verified 2026-09-27 / 2026-10-10 |
+| Guardrails F4/F5 (AppProjects, Pod Security), F10 (ESO 2.11.0) | Done and verified 2026-10-10 |
+| Package 0: supply chain (signed build provenance + SBOM in the shared CI workflow) | Done; verified 2026-10-11 (`gh attestation verify`, provenance policy report) |
+| Package 1: per-service database logins (F3), template `add-postgres-database` (T3) | Done and verified 2026-10-11 |
+| Package 2: Kyverno and eight admission policies (Step 33, F5) | Done and verified 2026-10-11 |
+| Package 3: observability: metrics, dashboards, alerts, logs, traces (Step 34, F14) | Done and verified 2026-10-11 through the APIs; nobody has opened the Grafana dashboard in a browser |
+| Package 4: Argo CD installs the platform controllers (F9); EKS Pod Identity (F12) | Done and verified 2026-10-11 |
+| Package 5: NetworkPolicy, TLS to Valkey (F13) | Done and verified 2026-10-11 |
+| Package 6: portal for more than one person (Step 31, F15): GitHub discovery, permission policy, no guest, TechDocs from S3, Kubernetes and GitHub Actions tabs | Done and verified 2026-10-11, except the refusal of a non-admin (unit tests only). Argo CD and Grafana plugins deliberately not built |
+| Package 7: feature flag golden path (T2): Kubernetes identity for the flag API, template `add-feature-flag`, flag helper in the skeleton | Done and verified 2026-10-11 |
+| Package 8: delivery clean-up (F8): every app deployed by Image Updater, scan before push, only the newest commit is pushed | Done and verified 2026-10-11 |
+| Package 9: `make e2e` (Step 36), rollout under load on a template service, recovery drill (Step 35) | e2e 42/42 and rollout (3,001 requests, 0 failed) verified. Drill: `make down` 17 min 16 s; the rebuild has no clean single number (Finding 89), roughly 40 minutes from nothing |
+| Template `decommission-service` (T4) | Done and verified 2026-10-11: nothing left behind. Its "delete the repository" option is not yet run for real |
+| Package 10: READMEs and these three documents | This change |
+| Package 11: study guide and video course | In progress, local (`~/projects/idp-study-guide/ROADMAP.md`) |
 
-**How a session works:** `aws sso login --profile idp`, then
-`TF_VAR_allowed_cidr="$(curl -s https://checkip.amazonaws.com)/32" make up` (~27 min; the ISP
-rotates the address, so the default in 30-cluster/variables.tf is usually stale) -> work ->
-`make down` (~16 min, must exit 0). Cost while up: ~$0.26/hr. **Merge everything first, then
-`make up`:** 40-platform reads the local checkout and Argo CD reads idp-gitops `main`.
+**How a session works:** merge everything and `git pull` in idp-infra first. Then
+`aws sso login --profile idp` (the login lasts a few hours: log in again before a long run),
+`TF_VAR_allowed_cidr="$(curl -s https://checkip.amazonaws.com)/32" make up` (about 27 minutes;
+it now waits for Argo CD's first full sync and exits 1 if the platform is not ready),
+`make e2e` (42 checks), work, `make down` (about 17 minutes, must exit 0). Cost while up:
+~$0.33/hr (three `t4g.medium` nodes since 2026-10-11).
 
-**Delivery chains (both verified end to end):**
-- feature-flag-service, idp-portal: push -> CI (tests, arm64 image, push to ECR via OIDC, Trivy
-  gate) -> CI bot commits the new tag to idp-gitops -> Argo CD auto-syncs -> zero-downtime rollout.
-- Golden-path services (template v2): push -> shared CI workflow (`surya-idp/idp-platform`) ->
-  ECR `svc/<name>` -> **Argo CD Image Updater** commits the tag as `idp-ci-bot[bot]` (signed) ->
-  Argo CD syncs. Service repos hold no credential for idp-gitops.
+**One delivery chain for everything:** push -> CI (tests, arm64 image, Trivy scan, then push to
+ECR via OIDC, only for the newest commit of main) -> Argo CD Image Updater commits the tag to
+idp-gitops as `idp-ci-bot[bot]` (signed) -> Argo CD rolls it out. The flag API and Backstage use
+it since 2026-10-11, like every template service. No application repository holds a credential
+for idp-gitops; the bot's key exists only in the cluster (and in `~/.idp` for the next
+`make up`). With the cluster down, a merge only pushes an image; the tag is committed at the
+next start.
 
-**Session 9 (2026-10-10):** template v2 phases 1-4 built offline, merged, and proven on a cluster
-session the same day. New: repo `idp-platform` (reusable CI workflow, tag v1.0.0); idp-gitops
-`components/golden-path` + `public-route`, ApplicationSet `golden-path-services`, Image Updater
-v1.3.1; idp-portal scaffolder action `idp:github:await-ci-auto-merge`, skeleton v2, template CI
-(`scripts/test-template.sh`); idp-infra role `idp-image-updater` and secret `idp/ci-bot-github-app`
-(`~/.idp/ci-bot-app.env` + `.pem`). Decisions: Kustomize components (not a shared chart); the
-Backstage App left the idp-gitops ruleset bypass list and "Allow auto-merge" is on. Findings 57-61
-(section 13). All draft PRs from Session 7 (guardrails, ESO) merged in the planned order.
+**The five repositories:** idp-infra, idp-gitops, idp-portal, idp-platform (shared CI workflow,
+tags v1.0.0, v2.0.0, v2.1.0, v2.1.1 = `3d15dbf`), feature-flag-service. Each has a README that
+describes its final state.
 
-**Read `PLATFORM_REVIEW.md` before new work** (section 5a = progress). Still open: apps use the RDS
-master user (F3), ESO + ALB controller installed by Terraform (F9), IRSA not Pod Identity (F12),
-no NetworkPolicy / Valkey TLS (F13), no observability (F14), Backstage guest + no permissions (F15).
+**What 2026-10-10 and 2026-10-11 added, in one paragraph:** packages 0-5 were built offline on
+the 10th (15 pull requests), verified in cluster session A on the 11th (13 checks, seven bugs
+found and fixed), packages 6-8 were built offline the same day, and verified in session B
+(14 checks, ten more bugs found and fixed, including one that mattered: the older of two quick
+pushes could end up deployed). Findings 62-93 in section 13 are the record. Results tables:
+`~/projects/idp-study-guide/COMPLETION-PLAN.md` sections 5a and 5c.
 
-**Templates: read `TEMPLATES_RESEARCH.md` before template work.** Phases 1-4 are done (section 13
-has the evidence). Next: phase 5 (SBOM, signing, provenance), phase 6 (day-2 templates:
-add-feature-flag, add-postgres-database after F3, decommission-service).
+**Never verified, so say so:** a real second user being refused by the permission policy; the
+"delete the repository" box of `decommission-service`; the Grafana dashboard opened in a
+browser; an exact first-response time through the load balancer for a new service.
 
-**Next session:** the user's choice; options and small follow-ups are in
-`~/projects/idp-study-guide/00-WHERE-WE-ARE.md` section 3. Checklist in section 16b.
+**Deliberately not built** (reasons in PLATFORM_REVIEW section 4 and
+`COMPLETION-PLAN.md` section 4): staging and production with promotion; other languages;
+a domain, HTTPS on the load balancer and single sign-on for the tools; multi-AZ RDS and
+backups; declarative ECR repositories; the Argo CD and Grafana plugins of Backstage.
 
-Small pending items: delete the inactive `idp-admin` access key and `~/.aws/credentials.disabled`
-/ `.bak`; uninstall leftover personal-account App installations; idp-portal `.trivyignore` expires
-2026-12-10; feature-flag-service and idp-portal still use the CI bot key (move them to Image Updater).
+**Standing chores:**
+- Every release of idp-platform needs two follow-ups: its commit added to the signer list in
+  `idp-gitops/platform/kyverno/verify-image-provenance.yaml`, and the pin in
+  `idp-portal/templates/python-service/skeleton/.github/workflows/ci.yml`.
+- idp-portal `.trivyignore` expires 2026-12-10: after that date its CI fails until the two
+  entries are reviewed.
+- Review the open Dependabot pull requests before any session (Finding 60).
 
 ---
 
@@ -142,6 +167,13 @@ aws sts get-caller-identity --profile idp
 ---
 
 ## 3. Cost Model
+
+> **Update 2026-10-11.** Two things below are out of date and are kept as the record of the
+> original plan. (1) The cluster now costs about **$0.33/hr**, not $0.26: three `t4g.medium`
+> nodes instead of two `t4g.small` (Finding 70). Per hour: EKS $0.10, nodes 3 x $0.0336,
+> NAT $0.056, ALB $0.024, public IPv4 about $0.015, RDS $0.017, Valkey $0.016.
+> (2) **The credits expired on 2026-09-27** (Finding 91). The "credits remaining after
+> project" line further down no longer applies: usage is billed to the card.
 
 ### CHOSEN: Option B — Full Destroy Every Session ($0.00 Idle)
 
@@ -209,47 +241,64 @@ orphaned snapshots. Must be true. Set and verified in 20-data/main.tf.
 
 8. **skip_final_snapshot = true on ALL RDS instances.** With Option B, false = $31/month snapshots.
 
+9. **Check Billing > Credits before relying on credits** (added 2026-10-11, Finding 91). Look at
+   the *active* tab, not "inactive credits": the inactive tab shows what was left when a credit
+   expired. Cost Explorer lags about a day and each API query costs $0.01.
+
+10. **Log in again before a long run** (added 2026-10-11, Finding 89). An expired single
+    sign-on session stops Terraform mid-run; a half-built platform still costs money. After any
+    failed `make up`, either finish it or run `make down`.
+
 ---
 
-## 5. Repository State (as of 2026-10-10)
+## 5. Repository State (as of 2026-10-11)
 
 | Repo | Local path | What it holds |
 |---|---|---|
-| [idp-infra](https://github.com/surya-idp/idp-infra) | `~/projects/idp-infra` | Terraform layers, Makefile, `scripts/` (down.sh, verify-empty.py, load-local-secrets.sh), `tests/rollout-load.js`, this doc, `PLATFORM_REVIEW.md`, `TEMPLATES_RESEARCH.md` |
-| [idp-gitops](https://github.com/surya-idp/idp-gitops) | `~/projects/idp-gitops` | Everything Argo CD deploys (layout below). Nothing is applied by hand |
-| [idp-portal](https://github.com/surya-idp/idp-portal) (public) | `~/projects/idp-portal` | Backstage 1.54 app, its CI, `templates/all-templates.yaml` + `templates/python-service/` (v2), custom scaffolder action in `packages/backend/src/scaffolder/`, template CI in `scripts/` |
-| [idp-platform](https://github.com/surya-idp/idp-platform) (public, since 2026-10-10) | `~/projects/idp-platform` | Reusable CI workflow `python-service.yml` for golden-path services (tag v1.0.0), tested against `tests/fixture-service` |
-| [feature-flag-service](https://github.com/surya-idp/feature-flag-service) | `~/projects/feature-flag-service` | The flag API (FastAPI, Alembic), its CI, `catalog-info.yaml` |
+| [idp-infra](https://github.com/surya-idp/idp-infra) | `~/projects/idp-infra` | Terraform layers, Makefile (`up`, `down`, `e2e`, `verify-empty`), `scripts/` (down.sh, verify-empty.py, load-local-secrets.sh), `tests/` (e2e.sh, rollout-load.js), this doc, `PLATFORM_REVIEW.md`, `TEMPLATES_RESEARCH.md` |
+| [idp-gitops](https://github.com/surya-idp/idp-gitops) | `~/projects/idp-gitops` | Everything Argo CD deploys: the Applications, the platform folders (cluster, db-operator, image-updater, kyverno, monitoring), the apps, the three Kustomize components, the validation scripts and their tests. Layout and sync waves: its README |
+| [idp-portal](https://github.com/surya-idp/idp-portal) (public) | `~/projects/idp-portal` | Backstage 1.54 app, its CI, four templates (`python-service`, `add-postgres-database`, `add-feature-flag`, `decommission-service`), eleven custom scaffolder actions and the permission policy in `packages/backend/src/`, template CI in `scripts/` |
+| [idp-platform](https://github.com/surya-idp/idp-platform) (public, since 2026-10-10) | `~/projects/idp-platform` | Reusable CI workflow `python-service.yml` for template services: check, image (scan, push, attest), docs. Tags v1.0.0, v2.0.0, v2.1.0, v2.1.1. Tested against `tests/fixture-service` |
+| [feature-flag-service](https://github.com/surya-idp/feature-flag-service) | `~/projects/feature-flag-service` | The flag API (FastAPI, Alembic), its tests and CI, `catalog-info.yaml` |
+
+Every repository's README was rewritten on 2026-10-11 to describe the final state; section 18
+of this document (the list of README additions) is closed.
 
 Cleaned 2026-09-27: one-off helper scripts, old transcripts, duplicate kubectl/terraform
 binaries, committed test `.db` files, the Step 11 `terraform/` folder in feature-flag-service
 (later idp-infra/90-legacy-neon, retired 2026-09-27) and Backstage's demo entities/template are gone. The only
-untracked file left is feature-flag-service `tests/test_e2e.sh` (kind-era, input for Step 36).
-Interview write-ups live outside the repos in `~/projects/to read/`.
-Follow-up: feature-flag-service README still describes the kind/Neon/GHCR setup (Section 18).
+untracked file left is feature-flag-service `tests/test_e2e.sh` (kind-era; replaced by
+`idp-infra/tests/e2e.sh`). Interview write-ups live outside the repos in `~/projects/to read/`.
+Cleaned 2026-10-11: a compiled Python file that had been committed to idp-gitops (Finding 93).
 
-### idp-gitops layout
+### idp-gitops layout (short; the full one is in its README)
 ```
-platform/argocd-apps/        app-of-apps children of the root app (root is created by 40-platform)
-  platform-cluster.yaml      wave 0: platform/cluster
-  feature-flag-dev.yaml      wave 1: apps/feature-flag-service/overlays/dev -> ns feature-flag-dev
-  idp-portal.yaml            wave 1: apps/idp-portal/overlays/dev -> ns backstage
-  projects.yaml              wave -1: AppProjects default (locked), platform, apps
-  image-updater.yaml         wave 1: platform/image-updater
-  golden-path-services.yaml  ApplicationSet: apps/*/overlays/dev -> Application <name> (project apps)
-platform/cluster/            ClusterSecretStore (Secrets Manager), PriorityClass business-critical
-platform/image-updater/      Argo CD Image Updater v1.3.1 (ECR login via IRSA, commits as idp-ci-bot)
-components/golden-path/      shared deploy standard for template services (rollout, pod security, probes, HPA metric, PDB)
-components/public-route/     shared-ALB annotations for a service's Ingress
-tests/golden-path-service/   sample service rendered by validate.sh (never deployed)
-apps/<service>/              added by the template's PR: only the service's own values
-platform/kyverno/            parked, not synced (Step 33)
-apps/feature-flag-service/   base (deployment, service, ingress, externalsecret, migrate-job hook,
-                             hpa + pdb in wave 3) + overlays dev/staging/prod (only dev deployed)
-apps/idp-portal/             base (deployment, service, 2 externalsecrets) + overlays/dev
+platform/argocd-apps/        the Applications; the root app (created by 40-platform) syncs this folder
+  projects.yaml              wave -3: AppProjects default (locked), platform, apps
+  platform-controllers.yaml  wave -2: AWS Load Balancer Controller; wave -1: External Secrets
+  platform-cluster.yaml, kyverno.yaml, db-operator.yaml, monitoring-*.yaml     wave 0
+  image-updater.yaml, feature-flag-dev.yaml, idp-portal.yaml                   wave 1
+  golden-path-services.yaml  wave 1: ApplicationSet, apps/*/overlays/dev -> one Application each
+platform/cluster/            ClusterSecretStore, PriorityClasses, Backstage's read-only cluster role,
+                             the flag API's right to verify ServiceAccount tokens
+platform/db-operator/        the operator's credentials (the only reader of the RDS master password)
+platform/image-updater/      Argo CD Image Updater v1.3.1: two ImageUpdaters (template services; the
+                             platform's two apps); commits as idp-ci-bot
+platform/kyverno/            eight admission policies
+platform/monitoring/         PodMonitor, alert rules, alert receiver, dashboard, NetworkPolicy
+components/golden-path/      the standard for template services, including their namespace
+components/public-route/     a path on the shared ALB
+components/postgres/         a database and a login of the service's own
+apps/feature-flag-service/   base + overlays dev/staging/prod (only dev deployed)
+apps/idp-portal/             Backstage
+apps/<service>/              added by the template's pull request: only the service's own values
+tests/                       sample services, policy tests, alert rule tests (never deployed)
+scripts/                     validate.sh and its checkers
 ```
-CI bots and Image Updater only ever change `newTag:` in `apps/*/overlays/dev/kustomization.yaml`.
+Only Image Updater changes `newTag:` in `apps/*/overlays/dev/kustomization.yaml`.
 `scripts/validate.sh` pins the public CRD schema catalog by commit (Finding 59).
+
+---
 
 ## 6. What Is Done — Steps 1–23 (history; current status is in section 0a)
 
@@ -341,26 +390,32 @@ Committed and pushed 2026-09-22. Commit: 907c464 to feature-flag-service repo.
 ```
 idp-infra/
   00-bootstrap/     S3 state bucket, DynamoDB table (unused, Finding 49), GitHub OIDC provider,
-  │                 CI roles idp-github-ci (exact repos) + idp-service-ci (template services,
-  │                 ECR svc/* only). LOCAL state (chicken-and-egg). NEVER destroyed.
+  │                 CI roles idp-github-ci (the two platform apps), idp-service-ci (template
+  │                 services: ECR svc/* and docs uploads), idp-infra-plan (read-only plan), and
+  │                 the docs bucket idp-techdocs-<account> (since 2026-10-11).
+  │                 LOCAL state (chicken-and-egg). Applied by hand. NEVER destroyed.
   10-network/       VPC 10.0.0.0/16, 2 AZs, public + private subnets, IGW, route tables, 4 SGs.
   │                 No NAT here (it is in 30). PERMANENT ($0).
   15-registry/      ECR feature-flag-service (keep 20) + idp-portal (keep 5). PERMANENT.
   │                 Not part of make up/down. (Template services create ECR svc/<name> from CI.)
-  20-data/          RDS db.t3.micro PostgreSQL 16 (gp2), Secrets Manager: idp/db-creds,
-  │                 idp/jwt-secret (generated), idp/grafana-admin, idp/backstage-github-app.
-  │                 Destroyed every session.
-  30-cluster/       EKS 1.35 + managed node group (ON_DEMAND t4g.small, prefix delegation),
-  │                 metrics-server add-on, NAT Gateway, ElastiCache Valkey + idp/valkey secret,
-  │                 IRSA roles idp-eso + idp-alb-controller. Destroyed every session.
-  40-platform/      Helm: AWS Load Balancer Controller 3.5.0, ESO 0.10.3, Argo CD 10.9.2 (v3.5.3),
-  │                 plus the root Application (app-of-apps -> idp-gitops/platform/argocd-apps).
-  │                 Destroyed every session.
+  20-data/          RDS db.t3.micro PostgreSQL 16 (gp2, encrypted), Secrets Manager: idp/db-creds,
+  │                 idp/jwt-secret and idp/grafana-admin (generated), idp/backstage-github-app and
+  │                 idp/ci-bot-github-app (filled from ~/.idp). Destroyed every session.
+  30-cluster/       EKS 1.35 (authentication mode API) + managed node group (3x ON_DEMAND
+  │                 t4g.medium, prefix delegation, network policy agent on), metrics-server and
+  │                 Pod Identity agent add-ons, NAT Gateway, ElastiCache Valkey with TLS +
+  │                 idp/valkey secret, and one IAM role per controller bound through EKS Pod
+  │                 Identity: idp-eso, idp-alb-controller, idp-image-updater, idp-portal,
+  │                 idp-kyverno. Destroyed every session.
+  40-platform/      Helm: Argo CD 10.9.2 (v3.5.3) only, plus the root Application
+  │                 (app-of-apps -> idp-gitops/platform/argocd-apps). Argo CD installs the load
+  │                 balancer controller, External Secrets and everything else. Destroyed every
+  │                 session.
   modules/vpc/      the only module (used by 10-network)
   scripts/          down.sh (make down), verify-empty.py, load-local-secrets.sh
-  tests/            rollout-load.js (k6 zero-downtime test)
+  tests/            e2e.sh (make e2e), rollout-load.js (k6 zero-downtime test)
   test_latency.py   latency A/B (Step 21)
-  Makefile          make up / make down / make verify-empty
+  Makefile          make up / make e2e / make down / make verify-empty
 ```
 
 ### Backend Config (per layer, all except 00-bootstrap)
@@ -395,22 +450,31 @@ provider "aws" {
 
 ## 8. Session Lifecycle Commands (Option B — Full Destroy)
 
-### make up (~21-27 min, measured)
+### make up (~27 min, measured)
 ```
-[1/4] 20-data apply            RDS + 4 secrets (DB password and JWT key generated by Terraform)
+[1/4] 20-data apply            RDS + 5 secrets (DB password, JWT key, Grafana password generated
+                               by Terraform)
       scripts/load-local-secrets.sh
                                ~/.idp/{backstage-app.env, backstage-app.pem, backstage-client-secret}
-                               -> idp/backstage-github-app (via stdin; warns and skips if missing)
-[2/4] 30-cluster apply         EKS, nodes, NAT, Valkey, IRSA roles
+                               -> idp/backstage-github-app
+                               ~/.idp/{ci-bot-app.env, ci-bot-app.pem} -> idp/ci-bot-github-app
+                               (via stdin; warns and skips if a file is missing)
+[2/4] 30-cluster apply         EKS, 3 nodes, NAT, Valkey, the pod roles and their Pod Identity
+                               associations
 [3/4] aws eks update-kubeconfig --name idp-cluster
-[4/4] 40-platform apply        ALB controller, ESO, Argo CD, root app
-      then waits (600s) for application/root to be Healthy
+[4/4] 40-platform apply        Argo CD and the root app
+      then waits (900s) for the root app's FIRST SYNC to succeed, then (300s) for Healthy;
+      exits 1 if the platform is not ready (Finding 80)
 ```
-No manual steps after it: secrets come from ESO, DB migrations run as an Argo CD Sync hook.
-Before `make up`: `curl -s https://checkip.amazonaws.com` must match `allowed_cidr` in
-30-cluster/variables.tf (the EKS API is restricted to your IP).
+Argo CD then installs, wave by wave: AppProjects (-3), load balancer controller (-2), External
+Secrets (-1), cluster config + Kyverno + database operator + monitoring (0), Image Updater +
+the flag API + Backstage + the ApplicationSet (1). That part takes about 8 of the 27 minutes.
+No manual steps after it: secrets come from ESO, databases and logins from the operator,
+migrations run as an Argo CD Sync hook. Run `make e2e` to confirm (42 checks).
+Always pass today's address: `TF_VAR_allowed_cidr="$(curl -s https://checkip.amazonaws.com)/32" make up`
+(the EKS API accepts one address; the default in 30-cluster/variables.tf is stale).
 
-### make down (~16 min) = scripts/down.sh
+### make down (~17 min) = scripts/down.sh
 ```
 [0/3] delete the root Argo app (cascade -> Ingresses -> the ALB controller deletes the ALB),
       then delete any leftover ALBs / target groups in the VPC
@@ -434,56 +498,62 @@ RDS, ElastiCache, Secrets Manager, EIPs...) that do not depend on tags. Exit 0 =
 | S3 state bucket | idp-tfstate-693906847772 (versioned, S3-native lock files) | 00 |
 | DynamoDB table | idp-tf-locks (unused, $0) | 00 |
 | GitHub OIDC provider | oidc-provider/token.actions.githubusercontent.com | 00 |
-| IAM roles | idp-github-ci, idp-service-ci | 00 |
+| IAM roles | idp-github-ci, idp-service-ci, idp-infra-plan | 00 |
+| S3 docs bucket | idp-techdocs-693906847772 (private, encrypted; documentation sites uploaded by service CI, read by Backstage; since 2026-10-11) | 00 |
 | VPC | vpc-0adcac5ff98908f3b (10.0.0.0/16) | 10 |
 | Subnets | public subnet-0acd17491022c527e (1a), subnet-01c8679e5fd4bf485 (1b); private subnet-038e07909e55745b9 (1a), subnet-0ffe3fe2c3c0167cd (1b) | 10 |
 | IGW / route tables | igw-0497cc66bfde6497a; rtb-06be6c352335c4528 (public), rtb-05a36c795c8121544, rtb-0a792e4f26cc2f99e (private) | 10 |
 | Security groups (recreated in the rename) | nodes sg-00fb3157d1737b8ae, rds sg-07f548e791862a77a, elasticache sg-06e3a1f4faf783e45, alb sg-053fa6f01bf151f17 | 10 |
 | ECR | feature-flag-service, idp-portal (+ svc/<name> created by template CI) | 15 |
-| **Backups to delete** | S3 ff-idp-tfstate-693906847772, DynamoDB ff-idp-tf-locks (unmanaged since the rename) | - |
+| ~~Backups~~ | S3 ff-idp-tfstate-693906847772 and DynamoDB ff-idp-tf-locks were deleted on 2026-09-27 (session notes of that day) | - |
 
-All free except ECR storage (~$0.10/GB-month).
+All free except storage: ECR (~$0.10/GB-month) and a few cents for the buckets.
 
 ## 10. Ephemeral Resources (Destroyed Each Session, Recreated Each make up)
 
 | Resource | Layer | Notes |
 |---|---|---|
-| RDS idp-postgres | 20-data | db.t3.micro, PostgreSQL 16, 20GB gp2, SSL enforced (Finding 47) |
-| Secret idp/db-creds | 20-data | generated password; url uses psycopg2 driver |
+| RDS idp-postgres | 20-data | db.t3.micro, PostgreSQL 16, 20GB gp2, encrypted, SSL enforced (Finding 47). Holds one database per app, created by the database operator |
+| Secret idp/db-creds | 20-data | master credentials, generated; read only by the database operator |
 | Secret idp/jwt-secret | 20-data | generated (`random_password`) |
-| Secret idp/grafana-admin | 20-data | placeholder (Step 34) |
-| Secret idp/backstage-github-app | 20-data | placeholder, filled from `~/.idp` by make up |
+| Secret idp/grafana-admin | 20-data | generated |
+| Secrets idp/backstage-github-app, idp/ci-bot-github-app | 20-data | placeholders, filled from `~/.idp` by make up |
 | NAT Gateway + EIP | 30-cluster | |
-| ElastiCache idp-valkey + secret idp/valkey | 30-cluster | cache.t4g.micro, engine valkey |
-| EKS idp-cluster + node group | 30-cluster | 1.35, t4g.small ON_DEMAND |
-| IAM roles idp-eso, idp-alb-controller | 30-cluster | IRSA |
-| ALB controller, ESO, Argo CD, root app | 40-platform | |
-| ALB (IngressGroup `idp`) | created by the ALB controller | deleted by down.sh step 0 |
+| ElastiCache idp-valkey + secret idp/valkey | 30-cluster | cache.t4g.micro, engine valkey, TLS in transit (`rediss://`) |
+| EKS idp-cluster + node group | 30-cluster | 1.35, 3x t4g.medium ON_DEMAND |
+| IAM roles idp-eso, idp-alb-controller, idp-image-updater, idp-portal, idp-kyverno | 30-cluster | EKS Pod Identity associations (no role name in any manifest) |
+| Argo CD, root app | 40-platform | |
+| Load balancer controller, External Secrets, Kyverno, database operator, monitoring stack, Image Updater, the apps | installed by Argo CD from idp-gitops | |
+| ALB (IngressGroup `idp`) | created by the load balancer controller | deleted by down.sh step 0 |
 
 ## 11. CI/CD State
 
-### feature-flag-service (.github/workflows/ci.yml)
-- `concurrency: ci-<event>-<sha>` (Finding 48).
-- `test` (ubuntu-latest, Postgres/Redis services, pytest) on every push and PR.
-- `build-and-push` (main only, `ubuntu-24.04-arm`): OIDC -> role idp-github-ci -> skip if the
-  SHA tag already exists in ECR -> buildx arm64 push (provenance=false) -> Trivy gate
-  (HIGH/CRITICAL with fix = fail; Trivy authenticates to ECR, TRIVY_PLATFORM=linux/arm64).
-- `update-env-config`: GitHub App token (ff-idp-ci-bot, repo idp-gitops only) -> set `newTag` in
-  `apps/feature-flag-service/overlays/dev/kustomization.yaml` -> commit -> push with
-  rebase-and-retry (3 tries).
-
-### idp-portal (.github/workflows/ci.yml)
-Same shape on `ubuntu-24.04-arm`: yarn install/tsc/build:backend -> docker build -> push unless
-the tag exists -> Trivy (local image) -> bot bumps `apps/idp-portal/overlays/dev`.
-`concurrency: ci-<sha>`.
+### feature-flag-service and idp-portal (.github/workflows/ci.yml in each)
+Same shape since 2026-10-11:
+- tests on every push and pull request (flag API: pytest with Postgres and Redis services;
+  portal: typecheck, unit tests, backend bundle, plus the `template` job).
+- on main, on the native `ubuntu-24.04-arm` runner: **build -> Trivy scan -> push**. The scan
+  is before the push because whatever is in ECR gets deployed. AWS login is OIDC -> role
+  `idp-github-ci`. A re-run does not fail on the immutable tag.
+- builds of one branch run one at a time, and **only the newest commit of main is pushed**:
+  before pushing, the job compares its commit with the branch head (Finding 86).
+- there is no `update-env-config` job and no bot key in these repositories any more. Argo CD
+  Image Updater (ImageUpdater `platform-apps`) commits the tag to idp-gitops.
 
 ### Services created by the python-service template
-Their CI is a ~20-line caller of `surya-idp/idp-platform/.github/workflows/python-service.yml`,
-pinned by commit: ruff, format check, mypy, pytest + coverage gate, arm64 image, Trivy, then on
-main: assume `idp-service-ci`, create ECR `svc/<name>` on first run, push. The deploy config is
-added by the template's PR to idp-gitops, pinned to the first commit SHA; the template merges that
-PR itself after the first CI run is green. Later tags are committed by Argo CD Image Updater.
-idp-portal CI also has a `template` job: scaffolder dry run + the rendered service's checks.
+Their CI is a ~15-line caller of `surya-idp/idp-platform/.github/workflows/python-service.yml`,
+pinned by commit (v2.1.1 = `3d15dbf`). Three jobs:
+- `check`: lock file, ruff, format check, mypy, pytest with a coverage gate.
+- `image`: build arm64, Trivy, then on main: assume `idp-service-ci`, create ECR `svc/<name>`
+  on first run, push (only for the branch's newest commit), then attest: signed build
+  provenance and a signed CycloneDX SBOM, stored next to the image.
+- `docs`: if the repo has a `mkdocs.yml`, build the TechDocs site on every run and on main
+  publish it to the docs bucket under `default/component/<name>/`.
+The deploy config is added by the template's pull request to idp-gitops, pinned to the first
+commit SHA; the template merges that pull request itself after the first CI run is green.
+Later tags are committed by Argo CD Image Updater (ImageUpdater `golden-path`).
+idp-portal CI also has a `template` job: scaffolder dry runs of all four templates and the
+rendered service's own checks.
 
 ### OIDC trust (00-bootstrap)
 `sub` embeds immutable IDs: `repo:surya-idp@334455734/<repo>@<repo_id>:ref:refs/heads/main`
@@ -497,7 +567,7 @@ Renaming a repo changes `sub` (the name is in it): update the trust before pushi
 ### GitHub Apps
 | App | ID | Installed on | Used by |
 |---|---|---|---|
-| `idp-ci-bot` (was ff-idp-ci-bot) | 5034584 (installation 165415314) | org surya-idp, only idp-gitops | CI bumps for feature-flag-service and idp-portal (secrets `FF_IDP_CI_BOT_APP_ID` / `FF_IDP_CI_BOT_PRIVATE_KEY` in those repos) and Argo CD Image Updater in the cluster (key from `~/.idp/ci-bot-app.pem` -> Secrets Manager `idp/ci-bot-github-app`). Commits as `idp-ci-bot[bot]`. Keys: App settings -> Credentials -> Key pairs |
+| `idp-ci-bot` (was ff-idp-ci-bot) | 5034584 (installation 165415314) | org surya-idp, only idp-gitops | Argo CD Image Updater in the cluster, for every app's tag commits. The repository secrets `FF_IDP_CI_BOT_APP_ID` / `FF_IDP_CI_BOT_PRIVATE_KEY` were deleted from feature-flag-service and idp-portal on 2026-10-11; the key now exists in `~/.idp` and, while the cluster is up, in Secrets Manager |
 | `idp-backstage-surya` (was ff-idp-backstage; NOT "idp-backstage") | 5088974 (client Iv23lij5ChFBE8WFtPEH) | org surya-idp, All repositories | Backstage catalog + scaffolder + GitHub sign-in. Credentials in `~/.idp` (700/600), never in Git or TF state. Actions: read not granted yet (Step 31) |
 
 Both Apps are owned by org surya-idp (transferred 2026-09-27; IDs, client ID and keys unchanged).
@@ -692,6 +762,86 @@ resource "aws_db_instance" "postgres" {
 **Finding 61: A commit SHA made only of digits breaks a kustomization.** `newTag: 0000...` is parsed as a number ("cannot unmarshal number into ... newTag of type string"). Found with the all-zero sample tag. The template now quotes `newTag`.
 **Finding 27: Spend audit.** As of 2026-09-26, ~$1 of credits used over 3 sessions, consistent with the ~$0.73/session model. Cost Explorer lags ~24h and shows ~$0; use Billing > Credits for the real balance. All regions checked empty.
 
+### Findings 62-93: packages 0-9 and the two cluster sessions (2026-10-10 and 2026-10-11)
+
+Grouped by when they were found. "Fix" names the pull request. The full session tables are in
+`~/projects/idp-study-guide/COMPLETION-PLAN.md` sections 5a and 5c.
+
+**Found while building offline (2026-10-10)**
+
+**Finding 62: The Kyverno CLI needs CRDs as files and guesses plurals.** Offline policy tests of a custom resource failed: `--crd-paths` wants files, and the CLI pluralises `Postgres` as `postgreses`, so a policy matching `postgres` never saw the test resource. Fix (idp-gitops#17, #16): the tests pass the CRD files and the policy lists both plural forms; the "good example" check was strengthened so that a policy that matches nothing cannot pass.
+
+**Finding 63: PyYAML cannot load the Prometheus CRDs.** They contain the YAML `=` value tag, which `yaml.safe_load` rejects. Fix (idp-gitops#18): `scripts/yamlsafe.py`, a loader that knows the tag, used by every script.
+
+**Finding 64: The Tempo chart moved.** The chart in the `grafana` Helm repository is deprecated. The stack uses the `grafana-community` chart 2.4.0 (idp-gitops#18).
+
+**Finding 65: Attesting to a throwaway registry needs real authentication.** The shared workflow's self-test pushes to a registry started inside the job. `actions/attest` needs a Docker config entry for the registry and an authentication challenge, so an open registry does not work. Fix (idp-platform#2): the test registry runs with htpasswd basic auth.
+
+**Finding 66: A metrics label lost the service's path prefix.** The route label of `http_requests_total` was built from the matched route, which does not include the `/<service>` prefix the router is mounted under, so dashboards could not tell services apart by path. Fix (idp-portal#32): the label is built from the request path with path parameters replaced by their names; a test pins it.
+
+**Finding 67: Removing a resource left an output pointing at it.** idp-infra CI failed after External Secrets left Terraform: `40-platform/outputs.tf` still referenced `kubernetes_namespace.external_secrets`. `terraform validate` in CI caught it before any apply (idp-infra#22).
+
+**Finding 68: Four quick merges committed image tags out of order.** After the batch merge of 2026-10-10, idp-portal's CI runs finished in a different order than their commits and the deploy repository ended up pointing at an older image until a job was re-run by hand. Root cause: each CI run commits its own tag. Removed by design in package 8 (Finding 79, Finding 86).
+
+**Finding 69: The flag API answered 500 for an invalid PATCH.** Written while adding API tests: a PATCH that made a flag inconsistent (for example a rollout percentage on a boolean flag) raised a `ValidationError` that nothing caught. Fix (feature-flag-service#2): it is a 422 with the reason. Same change: uvicorn keep-alive raised to 75 s, above the load balancer's 60 s idle timeout, so the load balancer never reuses a connection the server has just closed.
+
+**Found in session A (2026-10-11)**
+
+**Finding 70: The platform no longer fitted on `t4g.small` nodes.** Argo CD's repo server was OOMKilled at its 256Mi limit while rendering the charts of the platform, and one 2 GiB node went NotReady from memory exhaustion: the application controller had no memory request, so the scheduler placed it as if it were free. Fix (idp-infra#24): three `t4g.medium` nodes; memory requests and limits for the repo server and the controller. Cost went from ~$0.26 to ~$0.33 an hour. Lesson: a pod without a request is invisible to the scheduler.
+
+**Finding 71: The database operator's pod was refused by pod security.** Its namespace enforces the `restricted` level and the chart's pod had no seccomp profile. Fix (idp-gitops#21): `podSecurityContext` with `runAsNonRoot` and `seccompProfile: RuntimeDefault` in the chart values.
+
+**Finding 72: Two applications were permanently OutOfSync.** `kyverno` and `monitoring-stack` showed OutOfSync although nothing differed that a person had written: the API server fills in defaults (in CRDs and in the PodMonitor) that are not in the rendered manifest, and self-heal kept re-applying an identical manifest. Fix (idp-gitops#21): `ServerSideDiff=true` for both, so Argo CD compares with what the API server would store. Both were Synced without help in session B.
+
+**Finding 73: Alertmanager never started.** The operator refused the configuration: `undefined receiver "null" used in route`. Helm merges maps but replaces lists: our `receivers` list replaced the chart's default list, while the chart's default *route* to the receiver `null` (for the Watchdog alert) survived the merge. Alerts were firing in Prometheus with nowhere to go. Fix (idp-gitops#22): the route and the `null` receiver are written out; `scripts/alertmanager-check.py` now fails `validate` when any route names a receiver that is not defined.
+
+**Finding 74: The provenance policy rejected every correctly signed image.** `gh attestation verify` passed, the policy reported "no build provenance". The signing certificate names the workflow by the ref its caller used; services pin the workflow by commit, so the name ends in a commit id, and the policy accepted only `refs/heads/main` and `refs/tags/v*`. Fix (idp-gitops#24): the commit of each release is listed explicitly. Not "any commit": a commit on an unreviewed branch would then count as a trusted signer. Consequence: every idp-platform release needs its commit added (idp-gitops#35, #39).
+
+**Finding 75: Two alert rules were wrong in ways the unit tests did not see.** `ServiceDown` (`sum(up) == 0`) cannot fire when a service has no pods at all: no pods, no `up` series, and "no data" is not "equal to zero". `PodRestarting` arrived with `service="kps-kube-state-metrics"`, the exporter's own label. Fix (idp-gitops#25): a new alert `NoPodsAvailable` from `kube_deployment_status_replicas_available`, and an aggregation that keeps only the pod's labels; both with unit tests, including one that shows `ServiceDown` staying silent in the zero-pods case.
+
+**Finding 76: Every pull request was validated twice.** The `validate` workflow ran on every branch push and on `pull_request`, so the same commit was checked two times. Fix (idp-gitops#29): pushes are checked on `main` only.
+
+**Finding 77: A check that failed for the wrong reason.** The session's check script queried Prometheus with `wget` inside its pod; the image has neither `wget` nor `curl`, so the check reported "no scrape targets" on a healthy stack. Fix: query through a port-forward. Lesson: when a check fails, first make sure the check itself can succeed.
+
+**Finding 78: Decommissioning left two things behind.** The service's Postgres login role and its empty namespace. The operator drops a role only while its database exists and is *not being deleted*; removing a service deleted both at the same moment. And a namespace created by `CreateNamespace=true` belongs to no application, so nothing deletes it. Fix (idp-gitops#31): the service declares its own namespace (the `golden-path` component), and sync waves order namespace -3, database -2, login -1, everything else 0 or later. Argo CD 3.5 deletes an application in reverse wave order (`controller/sort_delete.go`). Verified in session B: nothing left.
+
+**Found between the sessions (2026-10-11)**
+
+**Finding 79: Two merges seconds apart built in parallel.** After moving the two platform apps to Image Updater, two quick merges of the flag API built side by side and the older commit's image was pushed second. Image Updater's rule is "newest build wins". First fix (idp-platform#3 = v2.1.0, feature-flag-service#6, idp-portal#37): a concurrency group, one build per branch at a time. Not sufficient: Finding 86.
+
+**Finding 92: The monitoring data stores were reachable from any pod.** Seen in session A: Grafana answered a probe from an unrelated namespace (it still needs its password; Prometheus, Alertmanager and Loki have no login at all). Fix (idp-gitops#34): a NetworkPolicy that lets only the `monitoring` namespace connect to Grafana, Prometheus, Alertmanager, Loki and the alert receiver, plus Backstage to Grafana. Tempo (traces arrive from every namespace) and the Prometheus operator (its webhook is called by the API server, whose address cannot be told apart from pods with the VPC CNI) are deliberately outside it. Verified in session B.
+
+**Found in session B (2026-10-11)**
+
+**Finding 80: A just-created Application reports Healthy.** It has no resources yet, so nothing is unhealthy. Two consequences. (a) The root app moved on to wave 0 while External Secrets (wave -1) was still installing; the database operator's ExternalSecret was rejected by a webhook that did not exist yet, and the sync then waited forever for a pod that needed that Secret. (b) `make up` printed "Environment ready" 3 minutes in, and `make e2e` right after it failed 31 checks. Fixes: the Application health check says Progressing until the first sync has finished and while one is running (idp-infra#28); the operator's ExternalSecret is in an earlier wave than its Deployment, so a rejection fails the sync and is retried (idp-gitops#37); `make up` waits for the root app's sync operation to succeed and exits 1 otherwise (idp-infra#30). Session A did not hit this: it is a race.
+
+**Finding 81: A new service waited 2.5 minutes to be noticed.** Argo CD's 60-second polling (idp-infra#25) applies to existing Applications. *Discovering a new folder* is the ApplicationSet's git generator, with its own 3-minute default. Fix (idp-gitops#37): `requeueAfterSeconds: 60`. Form to running pod went from 4 min 58 s to 2 min 36 s.
+
+**Finding 82: Dependabot's runs were counted as CI.** GitHub starts three "Dependabot Updates" runs for the first commit of a new repository, listed with `event: dynamic` beside the real workflow run. `idp:github:await-ci-auto-merge` treated every run of the commit as CI: the log linked a Dependabot run as "CI passed", and had they all finished before the real run was listed, the deploy pull request would have merged for an image that did not exist. Fix (idp-portal#39): runs with event `dynamic` are ignored.
+
+**Finding 83: "Loading chunk failed" after Backstage redeploys.** Not a platform fault: a browser tab opened before a rollout still holds the old page and asks for files only the old version had. Reload the tab. It appears more often now because Backstage redeploys itself a few minutes after `make up` whenever a newer image exists.
+
+**Finding 84: Policy reports arrived up to an hour late.** A new service's image had been verified at admission, but no policy report existed 50 minutes later. Reports for running resources are written by Kyverno's background scan: at start, then every hour by default. Fix (idp-gitops#38): `backgroundScanInterval: 10m`. Confirmed on the next service: reports within about 90 seconds. Enforcement at admission never depended on it.
+
+**Finding 85: The flag helper remembered a default.** `is_enabled("x")` followed by `is_enabled("x", default=True)` returned False: the first call's fallback was cached as if it were the flag's answer. Found by calling the helper from a real pod. Fix (idp-portal#40): only real answers from the flag service are cached. The test that should have caught it cleared the cache between its two calls.
+
+**Finding 86: A concurrency group does not order builds: the older of two quick pushes was deployed.** Check 9 of session B. Two commits pushed one second apart: GitHub ran the *newer* commit's image job first and the older one second, so the older commit's image was built last and Image Updater deployed it. Fix (idp-platform#4 = v2.1.1, feature-flag-service#7, idp-portal#41): before pushing, the job asks GitHub for the branch head and skips the push when a newer commit exists; that commit's own run pushes. Either order now ends with the newest commit built last. Proven by repeating the test: only the newest commit's image reached ECR.
+
+**Finding 87: Decommissioning did not know about flags and docs.** Both features were added after the template was written: the service's flag stayed in the flag API and its documentation stayed in the (permanent) docs bucket. Fix (idp-portal#43, idp-infra#29): two more steps, `idp:flags:delete-for-service` and `idp:aws:s3:delete-docs`, both admin-only, both fine with "there are none"; Backstage's role may delete under `default/component/*` only. Verified: 1 flag and 53 files deleted, nothing left anywhere.
+
+**Finding 88: `InfoInhibitor` is not an alert about anything.** It fires whenever an info-level alert does (here: CPU throttling while Argo CD started) and exists only to mute those. It failed `make e2e` on a healthy platform and was delivered to the receiver. Fix (idp-infra#30, idp-gitops#41): the test counts only warning and critical alerts; the route sends `InfoInhibitor` to the `null` receiver with `Watchdog`.
+
+**Finding 89: The recovery drill was interrupted twice by the laptop, not by the platform.** `make down` took 17 min 16 s and was clean. `make up` then (a) stopped after 51 seconds because the single sign-on session had expired (`unable to refresh SSO token ... InvalidGrantException`; `aws sts get-caller-identity` still worked from a cached role credential, which hid it), and (b) on the next attempt failed at the last layer after 29 minutes with `dial tcp ...:443: i/o timeout`, because the laptop had been on a different network when the run started and the cluster's allowed address no longer matched. Re-running `make up` on one network finished it. Lessons: log in again before a long run; check the login with the cache file's expiry, not with `sts`; stay on one network; `make up` is safe to repeat.
+
+**Finding 90: An archived repository keeps its name.** Creating a service with the name of a decommissioned one failed at "Create GitHub repository": `name already exists on this account`. A second attempt with a different name failed the same way, because the form's Name field is a repository picker whose autocomplete had put the old name back. Fix (idp-portal#44): `decommission-service` has an optional, off-by-default "delete the repository instead of archiving it" box for throwaway services; the action refuses the platform's own repositories whatever its input. The GitHub App needed no new permission (it archives with `administration: write` already). Not run for real yet.
+
+**Finding 91: The credits had expired two weeks earlier.** Found on 2026-10-11 when the credits page was opened for another reason: every credit `Expired`, status date 2026-09-27, $0.00 active. The page that was being read showed "$196.80 remaining" because it was the *inactive* tab. Cost Explorer: September usage $3.23 fully covered by credit; October usage billed with none. Likely cause, not confirmed by AWS: enabling IAM Identity Center on 2026-09-27 created an AWS Organization, and a Free Tier plan account that creates or joins an Organization is moved to the paid plan and its credits expire. The sessions of 2026-10-10 and 2026-10-11 were therefore paid for (estimate $4-6). Lessons: a security improvement (F1) had a billing side effect nobody checked; "credits remaining" must be read from the active tab on the day; this document's cost plan was treated as true for two weeks without being re-checked.
+
+**Finding 93: A compiled Python file was in the deploy repository.** `scripts/__pycache__/yamlsafe.cpython-314.pyc` had been committed with the script. Found while listing every tracked file for the documentation. Removed; a `.gitignore` keeps caches out.
+
+**Working-practice notes from these two days** (mistakes of the assistant, kept because they will happen again): a `pkill -f` pattern matched its own shell; a throwaway backend on port 7007 clashed with a port-forward (template CI now uses 7107); a local `main` that had not been pulled made a correct edit fail; a probe against the wrong path lost a timing; a statement that the AWS login was valid was based on `sts` instead of the session file.
+
+
 ---
 
 ## 14. Target env-config Structure (Step 27)
@@ -827,22 +977,37 @@ Build+teardown overhead is ~43 min of billing (~$0.20) even for a 5-minute test.
 
 ---
 
-## 16b. Next Session Checklist
-A session is: merge what should be tested -> `make up` -> everything deploys itself -> work -> `make down`.
-1. Merge first. 40-platform is applied from the local checkout (`git pull` in idp-infra) and Argo CD reads idp-gitops `main`. On 2026-10-10 `make up` was started before the merges and they had to be done mid-run.
-2. `aws sso login --profile idp` (username `surya`, not the email), then `aws sts get-caller-identity --profile idp` (SSO role).
-3. `TF_VAR_allowed_cidr="$(curl -s https://checkip.amazonaws.com)/32" make up` (~27 min). If the IP changes mid-session: `terraform -chdir=30-cluster apply -var "allowed_cidr=<new>/32" -auto-approve`.
-4. Check: `kubectl get applications,applicationsets -n argocd` all Synced/Healthy (root, platform-cluster, feature-flag-dev, idp-portal, image-updater); `kubectl -n argocd get imageupdater` Ready; `kubectl get externalsecret -A` all SecretSynced.
-5. Backstage: `kubectl port-forward svc/idp-portal -n backstage 7007:7007` -> http://localhost:7007, sign in with GitHub (not guest) to run templates. The port-forward drops whenever a new idp-portal image rolls out.
-6. Template check: Create -> Python service -> the task must end green and `http://<ALB>/<name>/` must return 200 with no click after the form.
-7. Clean up test services before or after `make down`: remove `apps/<name>` from idp-gitops (PR), delete ECR `svc/<name>`, delete the GitHub repo (`gh auth refresh -s delete_repo` once). A decommission template (T4) should replace this.
+## 16b. Session Checklist (current, 2026-10-11)
+
+No session is planned: cluster work is finished and cluster time is billed to the card
+(section 0a, Finding 91). If one is run anyway:
+
+1. Merge first, then `git pull` in idp-infra. 40-platform is applied from the local checkout and Argo CD reads idp-gitops `main`.
+2. `aws sso login --profile idp` (username `surya`, not the email) **immediately before** `make up`, even if a login from the morning still seems to work (Finding 89).
+3. Stay on one network. `TF_VAR_allowed_cidr="$(curl -s https://checkip.amazonaws.com)/32" make up` (~27 min). It exits 1 if the platform is not ready. If it fails for a laptop reason, run the same command again.
+4. `make e2e`: 42 checks, exit code 0.
+5. Backstage: `kubectl -n backstage port-forward svc/idp-portal 7007:7007` -> http://localhost:7007, sign in with GitHub. After Backstage redeploys (a few minutes after `make up` if a newer image exists, and after every merge to idp-portal): restart the port-forward and hard-reload the tab (Finding 83).
+6. Template check: Create -> Python service -> check the name on the review page (Finding 90) -> the task must end green and `http://<ALB>/<name>/` must return 200 with no click after the form.
+7. Clean up test services with the form: Create -> Decommission a service, with "delete the repository" ticked for throwaway services. Check afterwards: namespace gone, database and login gone, ECR repository gone, flags and docs gone.
 8. `make down` must exit 0 and you must SEE it finish (Finding 37). Re-run it if interrupted. Then `make verify-empty`.
-9. Claude cannot merge PRs, push tags, or run Terraform apply in this setup (permission classifier): those are handed to the user as exact commands.
-10. Manual, user, still open: delete the inactive idp-admin access key + `~/.aws/credentials.disabled` / `.bak`; uninstall leftover personal-account App installations (https://github.com/settings/installations). The 00-bootstrap trust clean-up looks applied (no DSurya11 subject in the role trust policies on 2026-10-10); confirm with `terraform -chdir=00-bootstrap plan`.
+9. Claude cannot merge pull requests, push tags, run `terraform apply` or delete repositories in this setup: those are handed to the owner as exact commands.
+10. Three things still worth doing in a session, because they were never verified: a second GitHub user being refused by the permission policy; the "delete the repository" box; opening the Grafana dashboard in a browser.
 
 ---
 
 ## 17. Remaining Steps — Full Specification
+
+> **Status 2026-10-11: nothing in this section remains.** It is kept as the original
+> specification, to compare the plan with what was built.
+>
+> | Step | Planned | What became of it |
+> |---|---|---|
+> | 23-30 | Cluster, GitOps, Backstage, templates | Done (see the DONE notes below) |
+> | 31 | Backstage plugins: Argo CD, Kubernetes, GitHub Actions, Grafana, TechDocs | Kubernetes, GitHub Actions and TechDocs (S3) built and verified. Argo CD and Grafana plugins deliberately not built: one more stored credential for the first, no reachable address for the second |
+> | 33 | Five more Kyverno policies | Eight policies on the new `policies.kyverno.io/v1` API, with offline tests; one of them verifies image provenance (audit) |
+> | 34 | Alerting to Slack/Discord, Loki + promtail, Tempo | Prometheus, Grafana, Alertmanager, Loki, Alloy (promtail's successor), Tempo. Alerts go to a receiver inside the cluster that logs them: no chat token to store, the delivery path is the real one |
+> | 35 | DR drill with `make nuke` and a final snapshot | Timed `make down` and `make up` plus `make e2e`. No snapshot: data is disposable by design. Teardown 17 min 16 s; rebuild about 40 min including a laptop-caused detour (Finding 89) |
+> | 36 | Rewrite `test_e2e.sh` for EKS | `tests/e2e.sh`, 42 read-only checks, `make e2e` |
 
 > Convention: every step must be verified with real command output before moving to next.
 
@@ -1121,6 +1286,11 @@ EKS context check, ALB DNS + HTTP 200, RDS from pod, ESO ExternalSecret=Ready, a
 ---
 
 ## 18. README Additions Still Needed
+
+> **Closed 2026-10-11.** The READMEs of all five repositories were rewritten for the final
+> state. The list below is the original wish list for the feature-flag-service README; the
+> points that still apply are in that README's "Engineering decisions" and "History" sections,
+> the others describe earlier stages that no longer exist.
 
 Add to Section 3 "Real Engineering Decisions":
 8. conntrack stickiness on sequential in-cluster requests
